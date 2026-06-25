@@ -1,0 +1,46 @@
+### model
+model_name_or_path: ${MODEL_PATH}
+
+### method
+stage: sft
+do_train: true
+finetuning_type: lora
+lora_rank: ${LORA_RANK}
+lora_target: ${LORA_TARGET}
+
+### dataset
+dataset_dir: ${DATASET_DIR}
+dataset: content_rm_train
+eval_dataset: content_rm_test
+template: ${CHAT_TEMPLATE}
+cutoff_len: ${CUTOFF_LEN}
+max_samples: ${MAX_SAMPLES}
+overwrite_cache: true
+preprocessing_num_workers: ${PREPROCESSING_NUM_WORKERS}
+
+### output
+output_dir: ${OUTPUT_DIR}
+logging_steps: ${LOGGING_STEPS}
+save_steps: ${SAVE_STEPS}
+plot_loss: true
+overwrite_output_dir: ${OVERWRITE_OUTPUT_DIR}
+save_only_model: ${SAVE_ONLY_MODEL}
+report_to: ${REPORT_TO}
+
+### train
+per_device_train_batch_size: ${PER_DEVICE_TRAIN_BATCH_SIZE}
+per_device_eval_batch_size: ${PER_DEVICE_EVAL_BATCH_SIZE}
+gradient_accumulation_steps: ${GRADIENT_ACCUMULATION_STEPS}
+learning_rate: ${LEARNING_RATE}
+num_train_epochs: ${NUM_TRAIN_EPOCHS}
+lr_scheduler_type: ${LR_SCHEDULER_TYPE}
+warmup_ratio: ${WARMUP_RATIO}
+bf16: ${BF16}
+ddp_timeout: 180000000
+gradient_checkpointing: ${GRADIENT_CHECKPOINTING}
+flash_attn: ${FLASH_ATTN}
+
+### eval
+do_eval: true
+eval_strategy: steps
+eval_steps: ${EVAL_STEPS}
