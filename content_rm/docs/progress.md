@@ -19,13 +19,14 @@
 6. `normalized_samples.jsonl` 仅作为 `--write-normalized` 调试产物，旧版已生成的调试/中间文件已清理。
 7. 当前样本量用于代码开发和流程 smoke test；后续做稳定评测指标时，计划扩展到约 200 条左右，并尽量平衡通过/不通过样本。
 8. 目录已重构为 `content_rm/data/`、`content_rm/sft/`、`content_rm/rl/`、`content_rm/docs/`；本地数据统一放入 ignored 的 `content_rm/data/local/`。
+9. 可选数据增强方向：借鉴 Autodata / Agentic Self-Instruct 思路，用 agent 生成金融内容审核候选样本，再通过 weak solver、strong solver/judge、规则校验和人工抽检筛选；第一阶段只作为 SFT 训练数据补充，不替代真实人工复核数据，测试集优先保留真实样本。
 
 ## SFT（进行中）
 1. SFT 数据不能只有最终通过/不通过标签；如果希望模型学习按 rubrics 推理，训练 target 中需要包含 reasoning 和 final decision。
 2. 已规划 SFT 数据生成口径：最终 `decision` 使用运营 `audit_label`，LLM 只提供 reasoning 候选，人工复核后再进入训练。
 3. SFT 训练入口使用 OpenRLHF，本地 JSONL 字段为 `context_messages` 和 `response`。
 4. `build_sft_dataset.py` 已改为直接从 `human_review.jsonl`、`rubrics.md` 和可选 `llm_annotations.jsonl` 生成最终 SFT 数据，不再依赖 `sft_draft.jsonl`。
-5. `build_sft_dataset.py` 现在按训练后端输出数据：默认生成 `sft/openrlhf/train.jsonl`、`sft/openrlhf/test.jsonl`；传入 `--write-llamafactory-alpaca` 时只生成 `sft/llamafactory_alpaca/train.json`、`test.json`、`dataset_info.json`。
+5. `build_sft_dataset.py` 现在按训练后端输出数据：默认生成 `sft/openrlhf/train.jsonl`、`sft/openrlhf/test.jsonl`；传入 `--write-llamafactory-alpaca` 时只生成 `sft/llamafactory_alpaca/train.json`、`test.json`、`dataset_info.json`；传入 `--write-post-train-platform` 时只生成 `sft/post-train-platform/all.jsonl`。
 6. OpenRLHF 与 Ascend/LLaMA-Factory 是两条独立 SFT 训练路线；OpenRLHF 使用 `content_rm/sft/openrlhf/train_sft_qwen2_5_7b.sh`。
 7. 已新增 Ascend 910B / LLaMA-Factory LoRA SFT 入口：`content_rm/sft/llamafactory/train_ascend_lora.sh`，默认 Qwen3-8B、LoRA、`qwen3_nothink`、`ASCEND_RT_VISIBLE_DEVICES=0`，实际模型/数据/输出路径通过环境变量覆盖。
 8. 下一步需要等待 LLM 标注和人工复核结果，再生成正式 SFT 数据；在公司 Ascend 环境上先用 200 条数据跑通 5 step smoke test，再扩大到 1000-2000 条正式训练。

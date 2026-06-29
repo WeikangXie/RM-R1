@@ -266,6 +266,28 @@ def to_llamafactory_alpaca(row: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def to_post_train_platform(row: dict[str, Any]) -> dict[str, str]:
+    context_messages = row.get("context_messages")
+    system = ""
+    prompt = ""
+    if isinstance(context_messages, list):
+        for message in context_messages:
+            if not isinstance(message, dict):
+                continue
+            role = message.get("role")
+            content = text_or_empty(message.get("content"))
+            if role == "system" and not system:
+                system = content
+            elif role == "user" and not prompt:
+                prompt = content
+
+    return {
+        "system": system,
+        "prompt": prompt,
+        "response": text_or_empty(row.get("response")),
+    }
+
+
 def write_openrlhf_outputs(
     output_dir: Path,
     human_review_rows: list[dict[str, Any]],
@@ -295,6 +317,34 @@ def write_openrlhf_outputs(
             "test": str(test_path),
         },
     )
+    write_json(summary_path, summary)
+    return summary
+
+
+def write_post_train_platform_outputs(
+    output_dir: Path,
+    human_review_rows: list[dict[str, Any]],
+    sft_rows: list[dict[str, Any]],
+    stats: Counter,
+) -> dict[str, Any]:
+    backend_dir = output_dir / "post-train-platform"
+    backend_dir.mkdir(parents=True, exist_ok=True)
+    all_path = backend_dir / "all.jsonl"
+    summary_path = backend_dir / "summary.json"
+
+    write_jsonl(all_path, [to_post_train_platform(row) for row in sft_rows])
+
+    summary = {
+        "output_format": "post_train_platform",
+        "total_review_rows": len(human_review_rows),
+        "usable_sft_rows": len(sft_rows),
+        "all_rows": len(sft_rows),
+        "build_stats": dict(stats),
+        "label_counts": dict(Counter(row["audit_label"] for row in sft_rows)),
+        "outputs": {
+            "all": str(all_path),
+        },
+    }
     write_json(summary_path, summary)
     return summary
 
@@ -365,10 +415,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--test-ratio", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--allow-empty-reasoning", action="store_true", help="For debugging only; not recommended for real SFT.")
-    parser.add_argument(
+    output_group = parser.add_mutually_exclusive_group()
+    output_group.add_argument(
         "--write-llamafactory-alpaca",
         action="store_true",
         help="Write only LLaMA-Factory Alpaca SFT files under llamafactory_alpaca/ instead of OpenRLHF JSONL.",
+    )
+    output_group.add_argument(
+        "--write-post-train-platform",
+        action="store_true",
+        help="Write only post-train platform SFT JSONL under post-train-platform/ instead of OpenRLHF JSONL.",
     )
     return parser.parse_args()
 
@@ -385,26 +441,34 @@ def main() -> None:
         rubrics,
         allow_empty_reasoning=args.allow_empty_reasoning,
     )
-    train_rows, test_rows = stratified_split(sft_rows, args.test_ratio, args.seed)
 
-    if args.write_llamafactory_alpaca:
-        summary = write_llamafactory_alpaca_outputs(
+    if args.write_post_train_platform:
+        summary = write_post_train_platform_outputs(
             args.output_dir,
             human_review_rows,
             sft_rows,
-            train_rows,
-            test_rows,
             stats,
         )
     else:
-        summary = write_openrlhf_outputs(
-            args.output_dir,
-            human_review_rows,
-            sft_rows,
-            train_rows,
-            test_rows,
-            stats,
-        )
+        train_rows, test_rows = stratified_split(sft_rows, args.test_ratio, args.seed)
+        if args.write_llamafactory_alpaca:
+            summary = write_llamafactory_alpaca_outputs(
+                args.output_dir,
+                human_review_rows,
+                sft_rows,
+                train_rows,
+                test_rows,
+                stats,
+            )
+        else:
+            summary = write_openrlhf_outputs(
+                args.output_dir,
+                human_review_rows,
+                sft_rows,
+                train_rows,
+                test_rows,
+                stats,
+            )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 

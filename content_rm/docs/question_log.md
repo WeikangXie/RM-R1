@@ -139,3 +139,67 @@
 - 回答：`grep` 用来按模式搜索文本，默认 pattern 可视为基础正则；当搜索内容没有正则特殊符号时，效果接近普通字符串搜索。如果想明确按普通字符串搜索，可以用 `grep -F`。`-R` 表示递归搜索目录。`2>/dev/null` 表示把标准错误 stderr 丢弃，常用于屏蔽无权限、目录不存在、特殊文件无法读取等报错，从而聚焦搜索结果。`| head` 使用管道把 `grep` 的标准输出传给 `head`，`head` 默认只展示前 10 行。
 - 可能缺乏的知识：grep/正则/普通字符串搜索、标准输出 stdout、标准错误 stderr、文件描述符 `2`、`/dev/null`、管道 `|`、`head` 命令。
 - Decision：在容器里检查 LLaMA-Factory 是否支持某个模板时，用真实路径搜索，例如 `grep -R "qwen3_nothink" /data/LLaMA-Factory/src /data/LLaMA-Factory 2>/dev/null | head`；若希望避免正则语义，可使用 `grep -RF "qwen3_nothink" ...`。
+
+## 2026-06-25 Worktree 与 LLaMA-Factory 环境排查
+
+### 问题：当前 Codex thread 是 worktree 形式工作，`.worktreeinclude` 是否真的生效？
+- 回答：当前 worktree 位于 `/Users/xieweikang/.codex/worktrees/e997/RM-R1`，主工作区位于 `/Users/xieweikang/claudeProjects/RM-R1`。`.worktreeinclude` 中包含 `content_rm/data/local/` 和 `*.rendered.yaml`，这些路径虽然被 `.gitignore` 忽略，但在当前 worktree 中确实存在对应本地数据和 rendered yaml，说明 Codex 创建 worktree 时已经把这些 ignored 资源带入。
+- 可能缺乏的知识：`.worktreeinclude` 不是 Git 原生机制，而是 Codex/worktree 创建流程使用的本地文件包含规则；它影响 ignored 文件是否被复制到临时 worktree，不影响 `git status`、`git add`、`git commit`。
+- Decision：`.worktreeinclude` 只用于让 side worktree 具备本地数据/配置上下文；不要把它理解为“允许提交 ignored 文件”的规则。
+
+### 问题：worktree 的工作形式应该如何把改动提交回主库？
+- 回答：当前 worktree 是 detached HEAD。稳妥做法是在 worktree 内先创建分支，例如 `git switch -c codex/post-train-platform-sft`，再 `git add`、`git commit`。之后可以回到主工作区 `main` 执行 `git merge codex/post-train-platform-sft`，或从 worktree 推送该分支后走 PR。
+- 可能缺乏的知识：Git worktree 可以共享同一个仓库对象库，但每个 worktree 有自己的工作区和 HEAD；detached HEAD 上的提交不挂在分支名上，后续容易丢失引用。
+- Decision：Codex worktree 中的有效改动先挂到 `codex/` 前缀分支，再通过本地 merge 或远端 PR 回到主库；不要把重要提交长期留在 detached HEAD。
+
+### 问题：如何在容器中查看 LLaMA-Factory 用的是哪个目录？
+- 回答：要区分“程序安装目录”和“训练使用目录”。程序安装目录可以用 `python -c "import llamafactory, inspect, os; print(os.path.dirname(inspect.getfile(llamafactory)))"` 或 `python -m pip show llamafactory` 查看；训练实际读取的数据、模型和输出目录应优先看环境变量 `MODEL_PATH`、`DATASET_DIR`、`OUTPUT_DIR`，以及启动脚本生成的 rendered yaml 中的 `model_name_or_path`、`dataset_dir`、`output_dir`。
+- 可能缺乏的知识：Python 包安装位置、命令行入口、训练配置文件和运行时环境变量是不同层面的路径；`llamafactory` 包在哪，不等于训练数据从哪读。
+- Decision：排查“本次训练读哪个数据目录”时优先看 rendered yaml 的 `dataset_dir`；排查“LLaMA-Factory 程序从哪来”时再看 Python package path 或 pip metadata。
+
+### 问题：为什么 `which llamafactory-cli` 没有输出，但 `pip show llamafactory` 能显示版本？`readlink -f "$(which llamafactory-cli)"` 是什么意思？
+- 回答：`pip show llamafactory` 有输出说明当前 Python 环境能看到 `llamafactory` 包；`which llamafactory-cli` 没输出说明命令行入口不在当前 shell 的 `PATH` 中，或者当前安装方式没有生成该入口，也可能 shell 使用的 Python 环境和安装包所在环境不一致。`readlink -f "$(which llamafactory-cli)"` 是先用 `which` 找 CLI 路径，再用 `readlink -f` 解析软链接最终指向；如果 `which` 本身为空，这条命令就没有实际意义。
+- 可能缺乏的知识：Python 包和 shell 命令入口是两回事；`PATH` 决定 shell 能直接找到哪些命令；`readlink -f` 用来解析软链接真实路径；命令替换 `$()` 会先执行括号内命令并把输出作为外层命令参数。
+- Decision：先用 `python -c "import sys; print(sys.executable)"` 和 `python -c "import sysconfig; print(sysconfig.get_path('scripts'))"` 确认当前 Python 与 scripts 目录；只有 `which llamafactory-cli` 有输出时，才继续对该路径执行 `readlink -f`。
+
+## 2026-06-29 SFT 训练数据与训练机制理解
+
+### 问题：模型判断和运营审核结果不一致的样本是否应该进入 SFT 训练集？
+- 回答：可以进入，而且这类样本通常是高价值纠错样本。若模型判断 `pass` 但运营结果是 `reject`，训练 target 应写 `decision: reject`，并在 reasoning 中解释命中的 rubric；若模型判断 `reject` 但运营结果是 `pass`，训练 target 应写 `decision: pass`，并解释为什么没有命中违规规则或为什么该表达仍可通过。
+- 可能缺乏的知识：SFT 学习的是最终 target，不是模型预判；模型预判主要用于发现 hard cases 和错判样本。业务金标、模型预测、rubric reasoning 是三个不同层次。
+- Decision：最终 SFT 样本的 `decision` 始终以运营 `audit_label` 为准；模型判断只作为辅助诊断信号。若运营 label、rubrics 和 reasoning 之间存在冲突，样本先进入复核池，不直接入训练。
+
+### 问题：SFT 的最终对齐目标是否应该是运营审核偏好？
+- 回答：是。当前任务不是训练通用金融合规模型，而是训练贴合平台运营审核口径的 AI 回复审核助手。因此监督信号应是“运营 `audit_label` + rubrics 下可解释的 reasoning”。裸 `pass/reject` 能教模型分类，但泛化弱；带 `violated_rubrics` 和具体证据的 reasoning 才能把运营偏好结构化。
+- 可能缺乏的知识：运营 outcome label 是业务目标，rubric reasoning 是把业务偏好转成模型可学习模式的中间表示；LLM 预标注不能覆盖运营金标。
+- Decision：训练 target 中 `decision` 使用运营 `audit_label`；`violated_rubrics` 和 `reasoning` 必须与该 decision 一致，用来解释运营口径。
+
+### 问题：如果一条 SFT 样本中 `violated_rubrics` / `reasoning` 与 `decision` 自相矛盾，应该如何处理？
+- 回答：这类样本不应直接进入训练。例如 reasoning 明确说“命中不得承诺收益、不得暗示收益”，但 `decision` 写成 `pass`，会教模型学习“一边判定违规一边通过”的错误模式。若运营结果确实是 `pass`，应把 `violated_rubrics` 改为空或改成符合通过口径的解释；若 reasoning/rubric 判断正确，则应把 `decision` 改为 `reject`。
+- 可能缺乏的知识：SFT 不会理解“字段冲突是脏数据”，它只会按 target token 学习；字段内部一致性比单个字段是否存在更重要。
+- Decision：新增或复核 SFT 数据时必须检查三元组一致性：`decision=reject` 时通常需要非空违规规则和拒绝理由；`decision=pass` 时不应保留违规命中和拒绝理由，除非 rubrics 明确允许某种例外且 reasoning 写清楚。
+
+### 问题：SFT 样本从 JSONL 到模型计算经历哪些转换？
+- 回答：人看到的 JSONL 行不是模型直接看到的文本。训练框架会先把 `system`、`prompt`、`response` 组装成 chat messages，再按目标模型的 chat template 拼成连续字符串，最后由模型 tokenizer 转成 token ids。对 Qwen 类模型，最终文本会包含 system/user/assistant 等模板标记和 assistant 的标准答案。
+- 可能缺乏的知识：JSONL 是数据容器；chat template 决定模型实际看到的字符串；tokenizer 决定字符串如何切成 token id。不同模型的 chat template 和特殊 token 可能不同。
+- Decision：排查训练输入时不能只看 JSONL 字段，还要确认平台/训练框架如何映射 `system`、`prompt`、`response`，以及使用了哪个模型的 tokenizer 和 chat template。
+
+### 问题：SFT 训练时模型是否会像推理一样边采样边生成？
+- 回答：不会。SFT 训练通常使用 teacher forcing：模型一次性读取完整 token 序列，对每个位置预测下一个 token，并用训练数据中的真实下一个 token 计算交叉熵 loss。训练时不会先采样出 token 再拿采样文本和标准答案比较；采样生成是推理阶段的行为。
+- 可能缺乏的知识：next-token prediction、teacher forcing、cross entropy、训练前向计算和推理自回归生成的区别。
+- Decision：理解 SFT loss 时按“给定完整上下文，逐 token 提高标准答案 token 的概率”来理解，不按“生成一段文本后再和标准答案比相似度”理解。
+
+### 问题：SFT loss 通常在哪些 token 上计算？一条样本如何结束？
+- 回答：在指令微调中，system/user prompt 通常作为上下文，label 会被 mask 成 `-100`，不参与 loss；assistant response token 才是主要监督目标。一条样本在 tokenize 后已经有确定长度，末尾通常包含 EOS 或 chat end token；若超过最大长度如 4096，会按平台策略截断或丢弃。训练不会让模型自行生成到最大长度。
+- 可能缺乏的知识：label mask、attention mask、padding、EOS/chat end token、max sequence length 的作用。
+- Decision：后续分析训练问题时要区分“上下文 token”和“监督 token”；重点确认 response 是否完整落在最大长度内，以及平台是否只对 assistant 输出计算 loss。
+
+### 问题：tokenizer 词表是怎么来的？中文和英文是否使用不同词表？
+- 回答：tokenizer 和词表来自基座模型，SFT 通常不重新训练 tokenizer。现代 LLM 的 tokenizer 一般是 BPE、SentencePiece 或类似子词方法，词表中同时包含中文字符/片段、英文词或子词、数字、标点、换行、JSON 符号和特殊 token。中文和英文不是两套独立词表，而是在同一个模型词表中按子词规则切分。
+- 可能缺乏的知识：tokenizer 是模型契约的一部分；微调主要更新模型权重，不改变输入 token id 的定义。
+- Decision：SFT 数据应使用与基座模型一致的 tokenizer；不要在微调阶段自行改变词表，除非有明确的新 token 扩展方案和对应 embedding 初始化策略。
+
+### 问题：一次 training step 具体做了什么？
+- 回答：一个 step 通常取一个 batch 的样本，完成 tokenize/padding/mask 后前向计算 logits，再对有效 label token 计算交叉熵 loss，反向传播并更新参数。若使用 gradient accumulation，多个 micro-batch 会先累积梯度，达到设定次数后才执行一次 optimizer update；平台显示的 step 通常指 optimizer step。
+- 可能缺乏的知识：batch、micro-batch、gradient accumulation、optimizer step 与样本条数不是同一个概念。
+- Decision：解释训练曲线时不要把 step 简单理解成“训练了几条样本”；要结合 batch size、gradient accumulation、epoch、有效 token 数一起看。

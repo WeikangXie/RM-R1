@@ -27,6 +27,13 @@ content_rm/data/local/sft/
 content_rm/data/local/checkpoints/
 ```
 
+## Data Commit Guidelines
+
+- Do not commit local business data, generated datasets, checkpoints, or rendered configs. Keep them under ignored paths such as `content_rm/data/local/`.
+- Generated data should be grouped by stage and target use: `content_rm/data/local/<stage>/<platform-or-purpose>/`.
+- SFT datasets should use `content_rm/data/local/sft/<platform-or-purpose>/`, for example `openrlhf/`, `llamafactory_alpaca/`, or `post-train-platform/`.
+- When adding a new data format, update this README with the generation command, output directory, and row-field contract in the same change.
+
 ## Current Label Mapping
 
 - `commentState=PUBLISHED` -> `pass`
@@ -125,7 +132,29 @@ The LLaMA-Factory files are:
 - `content_rm/data/local/sft/llamafactory_alpaca/dataset_info.json`
 - `content_rm/data/local/sft/llamafactory_alpaca/summary.json`
 
-The two output modes are exclusive for a single script run: without the flag it writes only `openrlhf/`; with the flag it writes only `llamafactory_alpaca/`.
+To build the post-train platform single-turn JSONL file instead, pass `--write-post-train-platform`:
+
+```bash
+python3 content_rm/data/build_sft_dataset.py \
+  --human-review content_rm/data/local/review/human_review.jsonl \
+  --rubrics content_rm/data/rubrics.md \
+  --llm-annotations content_rm/data/local/review/llm_annotations.jsonl \
+  --output-dir content_rm/data/local/sft \
+  --write-post-train-platform
+```
+
+The post-train platform files are:
+
+- `content_rm/data/local/sft/post-train-platform/all.jsonl`
+- `content_rm/data/local/sft/post-train-platform/summary.json`
+
+Each row in `all.jsonl` uses:
+
+- `system`: system prompt from the final SFT messages.
+- `prompt`: user prompt from the final SFT messages.
+- `response`: unchanged JSON string containing `violated_rubrics`, `reasoning`, and `decision`.
+
+The three output modes are exclusive for a single script run: without a format flag it writes only `openrlhf/`; with `--write-llamafactory-alpaca` it writes only `llamafactory_alpaca/`; with `--write-post-train-platform` it writes only `post-train-platform/`.
 
 ## Train SFT With OpenRLHF
 
