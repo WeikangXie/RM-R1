@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import html
 import json
-import os
 import re
 import time
 import urllib.error
@@ -29,6 +28,19 @@ from common import (
     text_or_empty,
     write_json,
     write_jsonl,
+)
+from config import (
+    FIRST_PASS_LLM_MAX_TOKENS,
+    LLM_AUTHORIZATION,
+    LLM_BASE_URL,
+    LLM_MODEL,
+    LLM_RESPONSE_FORMAT,
+    LLM_RETRIES,
+    LLM_RETRY_SLEEP,
+    LLM_SEED,
+    LLM_TEMPERATURE,
+    LLM_TIMEOUT,
+    LLM_TOP_P,
 )
 
 
@@ -161,34 +173,34 @@ def normalize_annotation(annotation: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def call_llm(task: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+def call_llm(task: dict[str, Any]) -> dict[str, Any]:
     payload = {
-        "model": args.llm_model,
+        "model": LLM_MODEL,
         "messages": task["messages"],
-        "max_tokens": args.llm_max_tokens,
-        "temperature": args.llm_temperature,
-        "top_p": args.llm_top_p,
+        "max_tokens": FIRST_PASS_LLM_MAX_TOKENS,
+        "temperature": LLM_TEMPERATURE,
+        "top_p": LLM_TOP_P,
         "stream": False,
         # The company interface documents response_format as json_object/text.
         # json_object makes annotation parsing stricter and downstream data clean.
-        "response_format": args.llm_response_format,
+        "response_format": LLM_RESPONSE_FORMAT,
     }
-    if args.llm_seed is not None:
-        payload["seed"] = args.llm_seed
+    if LLM_SEED is not None:
+        payload["seed"] = LLM_SEED
 
     request = urllib.request.Request(
-        build_llm_url(args.llm_base_url, args.llm_model),
+        build_llm_url(LLM_BASE_URL, LLM_MODEL),
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
         headers={
-            "Authorization": args.llm_authorization,
+            "Authorization": LLM_AUTHORIZATION,
             "Content-Type": "application/json",
         },
         method="POST",
     )
     last_error: Exception | None = None
-    for attempt in range(1, args.llm_retries + 1):
+    for attempt in range(1, LLM_RETRIES + 1):
         try:
-            with urllib.request.urlopen(request, timeout=args.llm_timeout) as response:
+            with urllib.request.urlopen(request, timeout=LLM_TIMEOUT) as response:
                 body = response.read().decode("utf-8")
             response_json = json.loads(body)
             raw_content = extract_completion_content(response_json)
@@ -202,11 +214,9 @@ def call_llm(task: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
             }
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
             last_error = exc
-            if attempt < args.llm_retries:
-                time.sleep(args.llm_retry_sleep)
+            if attempt < LLM_RETRIES:
+                time.sleep(LLM_RETRY_SLEEP)
 
-    if args.llm_fail_fast:
-        raise RuntimeError(f"LLM annotation failed for {task['custom_id']}: {last_error}") from last_error
     return {
         "custom_id": task["custom_id"],
         "audit_label": task["audit_label"],
@@ -216,14 +226,14 @@ def call_llm(task: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def run_llm_annotations(tasks: list[dict[str, Any]], args: argparse.Namespace) -> list[dict[str, Any]]:
-    if not args.llm_authorization:
-        raise ValueError("LLM authorization is required. Pass --llm-authorization or set LLM_AUTHORIZATION.")
+def run_llm_annotations(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not LLM_AUTHORIZATION:
+        raise ValueError("LLM authorization is required. Set LLM_AUTHORIZATION in content_rm/data/config.py or the environment.")
 
     results: list[dict[str, Any]] = []
     for index, task in enumerate(tasks, start=1):
         print(f"Annotating {index}/{len(tasks)}: {task['custom_id']}")
-        results.append(call_llm(task, args))
+        results.append(call_llm(task))
     return results
 
 
@@ -255,25 +265,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, required=True, help="Directory for generated artifacts.")
     parser.add_argument("--write-normalized", action="store_true", help="Write normalized_samples.jsonl for debugging.")
     parser.add_argument("--call-llm", action="store_true", help="Call company-internal LLM and fill annotations.")
-    parser.add_argument("--llm-base-url", default=os.getenv("LLM_BASE_URL", ""), help="Base URL, e.g. http://host:port")
-    parser.add_argument("--llm-model", default=os.getenv("LLM_MODEL", ""), help="Model name used in path and request body.")
-    parser.add_argument(
-        "--llm-authorization",
-        default=os.getenv("LLM_AUTHORIZATION", ""),
-        help="Authorization header value, e.g. Bearer xxx.",
-    )
-    parser.add_argument("--llm-max-tokens", type=int, default=512)
-    parser.add_argument("--llm-temperature", type=float, default=0.0)
-    parser.add_argument("--llm-top-p", type=float, default=1.0)
-    parser.add_argument("--llm-response-format", default="json_object", choices=["json_object", "text"])
-    parser.add_argument("--llm-seed", type=int, default=None)
-    parser.add_argument("--llm-timeout", type=float, default=60.0)
-    parser.add_argument("--llm-retries", type=int, default=2)
-    parser.add_argument("--llm-retry-sleep", type=float, default=1.0)
-    parser.add_argument("--llm-fail-fast", action="store_true", help="Stop on the first failed LLM annotation.")
     args = parser.parse_args()
-    if args.call_llm and (not args.llm_base_url or not args.llm_model):
-        parser.error("--call-llm requires --llm-base-url and --llm-model, or LLM_BASE_URL/LLM_MODEL env vars.")
+    if args.call_llm and (not LLM_BASE_URL or not LLM_MODEL):
+        parser.error("--call-llm requires LLM_BASE_URL and LLM_MODEL in content_rm/data/config.py.")
     return args
 
 
@@ -285,7 +279,7 @@ def main() -> None:
 
     samples = [make_sample(raw, index) for index, raw in enumerate(rows, start=1)]
     llm_tasks = [make_llm_task(sample, rubrics) for sample in samples]
-    llm_results = run_llm_annotations(llm_tasks, args) if args.call_llm else []
+    llm_results = run_llm_annotations(llm_tasks) if args.call_llm else []
     llm_annotations_by_id = {
         item["custom_id"]: item["annotation"]
         for item in llm_results

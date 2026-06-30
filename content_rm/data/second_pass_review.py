@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import time
 import urllib.error
 import urllib.request
@@ -25,6 +24,19 @@ from common import (
     text_or_empty,
     write_json,
     write_jsonl,
+)
+from config import (
+    LLM_AUTHORIZATION,
+    LLM_BASE_URL,
+    LLM_MODEL,
+    LLM_RESPONSE_FORMAT,
+    LLM_RETRIES,
+    LLM_RETRY_SLEEP,
+    LLM_SEED,
+    LLM_TEMPERATURE,
+    LLM_TIMEOUT,
+    LLM_TOP_P,
+    SECOND_PASS_LLM_MAX_TOKENS,
 )
 
 
@@ -120,38 +132,38 @@ def normalize_annotation(annotation: dict[str, Any], expected_decision: str, val
     }
 
 
-def call_llm(row: dict[str, Any], rubrics: list[dict[str, str]], valid_rubrics: set[str], args: argparse.Namespace) -> dict[str, Any]:
+def call_llm(row: dict[str, Any], rubrics: list[dict[str, str]], valid_rubrics: set[str]) -> dict[str, Any]:
     sample_id = text_or_empty(row.get("sample_id"))
     audit_label = normalize_label(row.get("audit_label"))
     payload: dict[str, Any] = {
-        "model": args.llm_model,
+        "model": LLM_MODEL,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt(row, rubrics)},
         ],
-        "max_tokens": args.llm_max_tokens,
-        "temperature": args.llm_temperature,
-        "top_p": args.llm_top_p,
+        "max_tokens": SECOND_PASS_LLM_MAX_TOKENS,
+        "temperature": LLM_TEMPERATURE,
+        "top_p": LLM_TOP_P,
         "stream": False,
-        "response_format": args.llm_response_format,
+        "response_format": LLM_RESPONSE_FORMAT,
     }
-    if args.llm_seed is not None:
-        payload["seed"] = args.llm_seed
+    if LLM_SEED is not None:
+        payload["seed"] = LLM_SEED
 
     request = urllib.request.Request(
-        build_llm_url(args.llm_base_url, args.llm_model),
+        build_llm_url(LLM_BASE_URL, LLM_MODEL),
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
         headers={
-            "Authorization": args.llm_authorization,
+            "Authorization": LLM_AUTHORIZATION,
             "Content-Type": "application/json",
         },
         method="POST",
     )
 
     last_error: Exception | None = None
-    for attempt in range(1, args.llm_retries + 1):
+    for attempt in range(1, LLM_RETRIES + 1):
         try:
-            with urllib.request.urlopen(request, timeout=args.llm_timeout) as response:
+            with urllib.request.urlopen(request, timeout=LLM_TIMEOUT) as response:
                 body = response.read().decode("utf-8")
             response_json = json.loads(body)
             raw_content = extract_completion_content(response_json)
@@ -166,11 +178,9 @@ def call_llm(row: dict[str, Any], rubrics: list[dict[str, str]], valid_rubrics: 
             }
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
             last_error = exc
-            if attempt < args.llm_retries:
-                time.sleep(args.llm_retry_sleep)
+            if attempt < LLM_RETRIES:
+                time.sleep(LLM_RETRY_SLEEP)
 
-    if args.llm_fail_fast:
-        raise RuntimeError(f"Second-pass annotation failed for {sample_id}: {last_error}") from last_error
     return {
         "custom_id": sample_id,
         "audit_label": audit_label,
@@ -208,27 +218,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--human-review", type=Path, required=True, help="Input human_review.jsonl with first-pass LLM fields.")
     parser.add_argument("--rubrics", type=Path, required=True, help="Rubrics markdown file.")
     parser.add_argument("--output", type=Path, required=True, help="Output second-pass annotations JSONL.")
-    parser.add_argument("--limit", type=int, default=None, help="Optional max number of disagreement rows to process.")
     parser.add_argument("--dry-run", action="store_true", help="Only count selected disagreement rows; do not call LLM.")
-    parser.add_argument("--llm-base-url", default=os.getenv("LLM_BASE_URL", ""), help="Base URL, e.g. http://host:port")
-    parser.add_argument("--llm-model", default=os.getenv("LLM_MODEL", ""), help="Model name used in path and request body.")
-    parser.add_argument(
-        "--llm-authorization",
-        default=os.getenv("LLM_AUTHORIZATION", ""),
-        help="Authorization header value, e.g. Bearer xxx.",
-    )
-    parser.add_argument("--llm-max-tokens", type=int, default=768)
-    parser.add_argument("--llm-temperature", type=float, default=0.0)
-    parser.add_argument("--llm-top-p", type=float, default=1.0)
-    parser.add_argument("--llm-response-format", default="json_object", choices=["json_object", "text"])
-    parser.add_argument("--llm-seed", type=int, default=None)
-    parser.add_argument("--llm-timeout", type=float, default=60.0)
-    parser.add_argument("--llm-retries", type=int, default=2)
-    parser.add_argument("--llm-retry-sleep", type=float, default=1.0)
-    parser.add_argument("--llm-fail-fast", action="store_true", help="Stop on the first failed second-pass annotation.")
     args = parser.parse_args()
-    if not args.dry_run and (not args.llm_base_url or not args.llm_model or not args.llm_authorization):
-        parser.error("LLM calls require --llm-base-url, --llm-model, and --llm-authorization, or matching env vars. Use --dry-run to only inspect disagreements.")
+    if not args.dry_run and (not LLM_BASE_URL or not LLM_MODEL or not LLM_AUTHORIZATION):
+        parser.error("LLM calls require LLM_BASE_URL, LLM_MODEL, and LLM_AUTHORIZATION in content_rm/data/config.py.")
     return args
 
 
@@ -239,8 +232,6 @@ def main() -> None:
     valid_rubrics = {rubric["name"] for rubric in rubrics}
 
     disagreements = [row for row in rows if is_disagreement(row)]
-    if args.limit is not None:
-        disagreements = disagreements[: args.limit]
 
     summary_path = args.output.parent / "second_pass_summary.json"
     if args.dry_run:
@@ -252,7 +243,7 @@ def main() -> None:
     for index, row in enumerate(disagreements, start=1):
         sample_id = text_or_empty(row.get("sample_id"))
         print(f"Second-pass annotating {index}/{len(disagreements)}: {sample_id}")
-        results.append(call_llm(row, rubrics, valid_rubrics, args))
+        results.append(call_llm(row, rubrics, valid_rubrics))
         write_jsonl(args.output, results)
 
     summary = make_summary(rows, disagreements, results)

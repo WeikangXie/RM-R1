@@ -71,17 +71,14 @@ No `llm_annotation_tasks.jsonl`, `human_review.csv`, or `sft_draft.jsonl` is wri
 
 ## Call Company LLM
 
-The script can optionally call the company-internal chat completion endpoint:
+The script can optionally call the company-internal chat completion endpoint. Configure LLM call parameters in `content_rm/data/config.py`. Keep long-lived tokens out of git; prefer `LLM_AUTHORIZATION` in the environment.
 
 ```bash
 python3 content_rm/data/prepare_dataset.py \
   --input content_rm/data/local/raw/comment_data.jsonl \
   --rubrics content_rm/data/rubrics.md \
   --output-dir content_rm/data/local/review \
-  --call-llm \
-  --llm-base-url http://your-host:your-port \
-  --llm-model your-model-name \
-  --llm-authorization "Bearer your-token"
+  --call-llm
 ```
 
 The endpoint path is built as:
@@ -114,10 +111,7 @@ Call the company-internal LLM for selected disagreements:
 python3 content_rm/data/second_pass_review.py \
   --human-review content_rm/data/local/review/human_review.jsonl \
   --rubrics content_rm/data/rubrics.md \
-  --output content_rm/data/local/review/second_pass_annotations.jsonl \
-  --llm-base-url http://your-host:your-port \
-  --llm-model your-model-name \
-  --llm-authorization "Bearer your-token"
+  --output content_rm/data/local/review/second_pass_annotations.jsonl
 ```
 
 The script writes `second_pass_annotations.jsonl` and `second_pass_summary.json` in the output directory. It does not overwrite `human_review.jsonl`.
