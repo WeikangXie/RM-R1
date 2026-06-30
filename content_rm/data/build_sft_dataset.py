@@ -10,8 +10,16 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
-
-VALID_LABELS = {"pass", "reject"}
+from common import (
+    VALID_LABELS,
+    parse_rubrics,
+    read_jsonl,
+    read_rubrics,
+    rubrics_text,
+    text_or_empty,
+    write_json,
+    write_jsonl,
+)
 
 
 SYSTEM_PROMPT = """你是金融内容社区的 AI 回复审核助手。请严格依据给定 rubrics 判断 AI 回复是否可以通过运营审核。
@@ -27,74 +35,6 @@ SYSTEM_PROMPT = """你是金融内容社区的 AI 回复审核助手。请严格
 1. decision 只能是 pass 或 reject。
 2. 若 AI 回复包含收益承诺、暗示确定收益、诱导买卖、个性化投资建议、事实不确定却说得过满等风险，应倾向 reject。
 """
-
-
-def read_jsonl(path: Path) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    with path.open("r", encoding="utf-8") as f:
-        for line_no, line in enumerate(f, start=1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"{path}:{line_no} is not valid JSON: {exc}") from exc
-            if not isinstance(obj, dict):
-                raise ValueError(f"{path}:{line_no} must be a JSON object")
-            rows.append(obj)
-    return rows
-
-
-def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
-    with path.open("w", encoding="utf-8") as f:
-        for row in rows:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
-
-
-def write_json(path: Path, value: Any) -> None:
-    path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-
-def text_or_empty(value: Any) -> str:
-    return value if isinstance(value, str) else ""
-
-
-def read_rubrics(path: Path) -> list[dict[str, str]]:
-    rubrics: list[dict[str, str]] = []
-    with path.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line.startswith("|"):
-                continue
-            cells = [cell.strip() for cell in line.strip("|").split("|")]
-            if len(cells) < 2:
-                continue
-            name, description = cells[0], cells[1]
-            if name in {"Rubric", "-----------"} or set(name) <= {"-"}:
-                continue
-            rubrics.append({"name": name, "description": description})
-    if not rubrics:
-        raise ValueError(f"No rubrics parsed from {path}")
-    return rubrics
-
-
-def rubrics_text(rubrics: list[dict[str, str]]) -> str:
-    return "\n".join(f"- {r['name']}: {r['description']}" for r in rubrics)
-
-
-def parse_rubrics(value: Any) -> list[str]:
-    if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()]
-    if not isinstance(value, str) or not value.strip():
-        return []
-    if "|" in value:
-        parts = value.split("|")
-    elif "," in value:
-        parts = value.split(",")
-    else:
-        parts = [value]
-    return [part.strip() for part in parts if part.strip()]
 
 
 def load_llm_annotations(path: Path | None) -> dict[str, dict[str, Any]]:

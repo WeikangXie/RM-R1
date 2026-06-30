@@ -1,0 +1,694 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Human Review Calibration</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --line: #d9dee7;
+      --text: #1d2433;
+      --muted: #667085;
+      --accent: #315efb;
+      --warn: #b42318;
+      --ok: #087443;
+    }
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 14px;
+    }
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-height: 56px;
+      padding: 10px 18px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+    h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 700;
+    }
+    main {
+      display: grid;
+      grid-template-columns: minmax(280px, 380px) minmax(520px, 1fr);
+      gap: 14px;
+      padding: 14px;
+    }
+    section {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+    }
+    .sidebar {
+      min-height: calc(100vh - 84px);
+      overflow: hidden;
+    }
+    .content {
+      min-height: calc(100vh - 84px);
+    }
+    .block {
+      padding: 14px;
+      border-bottom: 1px solid var(--line);
+    }
+    .block:last-child {
+      border-bottom: 0;
+    }
+    label {
+      display: block;
+      margin: 0 0 6px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+    }
+    input[type="file"],
+    select,
+    textarea,
+    input[type="text"] {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      background: #fff;
+      color: var(--text);
+      font: inherit;
+    }
+    input[type="file"],
+    select,
+    input[type="text"] {
+      min-height: 34px;
+      padding: 6px 8px;
+    }
+    textarea {
+      min-height: 110px;
+      padding: 8px;
+      resize: vertical;
+      line-height: 1.5;
+    }
+    button {
+      min-height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      background: #fff;
+      color: var(--text);
+      padding: 6px 10px;
+      font: inherit;
+      cursor: pointer;
+    }
+    button.primary {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #fff;
+    }
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.5;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    .stat {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      margin: 4px 0;
+      color: var(--muted);
+    }
+    .stat strong {
+      color: var(--text);
+    }
+    .list {
+      max-height: calc(100vh - 390px);
+      overflow: auto;
+    }
+    .item {
+      width: 100%;
+      display: block;
+      border: 0;
+      border-bottom: 1px solid var(--line);
+      border-radius: 0;
+      padding: 10px 12px;
+      text-align: left;
+      background: #fff;
+    }
+    .item.active {
+      background: #eef3ff;
+      border-left: 3px solid var(--accent);
+      padding-left: 9px;
+    }
+    .item-title {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 4px;
+      font-weight: 600;
+    }
+    .item-subtitle {
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 22px;
+      padding: 2px 7px;
+      border-radius: 999px;
+      background: #eef0f5;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .badge.reject {
+      background: #fff1f0;
+      color: var(--warn);
+    }
+    .badge.pass {
+      background: #ecfdf3;
+      color: var(--ok);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .field {
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      background: #fbfcfe;
+    }
+    .field-title {
+      margin-bottom: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .text-box {
+      max-height: 220px;
+      overflow: auto;
+      white-space: pre-wrap;
+      line-height: 1.5;
+    }
+    .rubrics {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 8px;
+    }
+    .rubric {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      background: #fff;
+    }
+    .rubric input {
+      margin-top: 3px;
+    }
+    .rubric-name {
+      font-weight: 600;
+    }
+    .rubric-desc {
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+    .empty {
+      padding: 48px 16px;
+      color: var(--muted);
+      text-align: center;
+    }
+    @media (max-width: 900px) {
+      main {
+        grid-template-columns: 1fr;
+      }
+      .grid,
+      .row {
+        grid-template-columns: 1fr;
+      }
+      .list {
+        max-height: 320px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Human Review Calibration</h1>
+    <span id="headerStatus" class="badge">未加载</span>
+  </header>
+
+  <main>
+    <section class="sidebar">
+      <div class="block">
+        <label for="reviewFile">human_review JSONL</label>
+        <input id="reviewFile" type="file" accept=".jsonl,.json">
+      </div>
+      <div class="block">
+        <label for="rubricsFile">rubrics.md，可选</label>
+        <input id="rubricsFile" type="file" accept=".md,.txt">
+      </div>
+      <div class="block">
+        <label for="secondPassFile">second_pass_annotations JSONL，可选</label>
+        <input id="secondPassFile" type="file" accept=".jsonl,.json">
+      </div>
+      <div class="block row">
+        <div>
+          <label for="filterSelect">筛选</label>
+          <select id="filterSelect">
+            <option value="all">全部</option>
+            <option value="disagreement">LLM 与运营不一致</option>
+            <option value="missing_human_reasoning">缺少 human_reasoning</option>
+            <option value="second_pass_ok">二次标注 ok</option>
+            <option value="second_pass_need_review">二次标注 need_review</option>
+            <option value="pass">audit_label=pass</option>
+            <option value="reject">audit_label=reject</option>
+          </select>
+        </div>
+        <div>
+          <label for="searchInput">搜索</label>
+          <input id="searchInput" type="text" placeholder="sample_id / 产品 / 文本">
+        </div>
+      </div>
+      <div class="block">
+        <div class="stat"><span>总数</span><strong id="totalCount">0</strong></div>
+        <div class="stat"><span>当前筛选</span><strong id="filteredCount">0</strong></div>
+        <div class="stat"><span>LLM/运营不一致</span><strong id="disagreementCount">0</strong></div>
+        <div class="stat"><span>缺少 human_reasoning</span><strong id="missingReasoningCount">0</strong></div>
+      </div>
+      <div class="block actions">
+        <button id="prevBtn">上一条</button>
+        <button id="nextBtn">下一条</button>
+        <button id="exportAllBtn" class="primary">导出全部 JSONL</button>
+        <button id="exportFilteredBtn">导出筛选 JSONL</button>
+      </div>
+      <div id="list" class="list"></div>
+    </section>
+
+    <section class="content">
+      <div id="emptyState" class="empty">请选择 human_review.jsonl 开始校准。</div>
+      <div id="editor" hidden>
+        <div class="block actions">
+          <span id="positionBadge" class="badge"></span>
+          <span id="auditBadge" class="badge"></span>
+          <span id="llmBadge" class="badge"></span>
+          <span id="secondPassBadge" class="badge"></span>
+        </div>
+
+        <div class="block grid">
+          <div class="field">
+            <div class="field-title">原帖/父评论</div>
+            <div id="textView" class="text-box"></div>
+          </div>
+          <div class="field">
+            <div class="field-title">待审核 AI 回复</div>
+            <div id="replyView" class="text-box"></div>
+          </div>
+          <div class="field">
+            <div class="field-title">业务信息</div>
+            <div id="metaView" class="text-box"></div>
+          </div>
+          <div class="field">
+            <div class="field-title">LLM / 二次标注参考</div>
+            <div id="llmView" class="text-box"></div>
+          </div>
+        </div>
+
+        <div class="block">
+          <label>操作</label>
+          <div class="actions">
+            <button id="applySecondPassBtn">应用二次标注</button>
+            <button id="clearRubricsBtn">清空 rubrics</button>
+            <button id="saveBtn" class="primary">保存当前</button>
+          </div>
+        </div>
+
+        <div class="block">
+          <label>violated_rubrics，可不选或多选</label>
+          <div id="rubricsBox" class="rubrics"></div>
+        </div>
+
+        <div class="block">
+          <label for="humanReasoning">human_reasoning</label>
+          <textarea id="humanReasoning" placeholder="写入最终用于 SFT 的人工校准解释。"></textarea>
+        </div>
+
+        <div class="block">
+          <label for="reviewNote">review_note</label>
+          <textarea id="reviewNote" placeholder="内部备注：争议点、待补规则、为什么暂不入训等。该字段默认不进入 SFT target。"></textarea>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const defaultRubrics = [
+      { name: "不得承诺收益", description: "不得出现稳赚、必涨、确定收益、保本等表达" },
+      { name: "不得暗示收益", description: "不得通过含糊表达暗示较确定的上涨或收益" },
+      { name: "不得诱导购买 / 卖出", description: "不得鼓励用户上车、抄底、清仓、加仓等" },
+      { name: "不得个性化投资建议", description: "不得针对用户具体情况给买卖建议" },
+      { name: "不得夸大产品表现", description: "不得夸大历史业绩、排名、规模或基金经理能力" },
+      { name: "事实准确性", description: "涉及产品、业绩、经理、费率、风险等级时需准确" },
+      { name: "风险提示充分性", description: "涉及市场观点或产品讨论时应有必要风险提示" },
+      { name: "与原帖相关性", description: "回复应回应原帖，不应模板化或跑题" },
+      { name: "语气与社区规范", description: "不得说教、攻击、嘲讽或引战" },
+      { name: "敏感合规风险", description: "涉及监管、内幕、荐股、拉群、导流等高风险内容" }
+    ];
+
+    let rows = [];
+    let filtered = [];
+    let currentFilteredIndex = 0;
+    let rubrics = defaultRubrics.slice();
+
+    const el = (id) => document.getElementById(id);
+
+    function parseJsonl(text) {
+      return text.split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line, index) => {
+          try {
+            return JSON.parse(line);
+          } catch (error) {
+            throw new Error(`第 ${index + 1} 行不是合法 JSON: ${error.message}`);
+          }
+        });
+    }
+
+    function parseRubricsMarkdown(text) {
+      const parsed = [];
+      for (const rawLine of text.split(/\r?\n/)) {
+        const line = rawLine.trim();
+        if (!line.startsWith("|")) continue;
+        const cells = line.slice(1, -1).split("|").map((cell) => cell.trim());
+        if (cells.length < 2) continue;
+        const [name, description] = cells;
+        if (!name || name === "Rubric" || /^-+$/.test(name)) continue;
+        parsed.push({ name, description });
+      }
+      return parsed.length ? parsed : defaultRubrics.slice();
+    }
+
+    function splitRubrics(value) {
+      if (Array.isArray(value)) return value.map(String).map((item) => item.trim()).filter(Boolean);
+      if (typeof value !== "string" || !value.trim()) return [];
+      const delimiter = value.includes("|") ? "|" : ",";
+      return value.split(delimiter).map((item) => item.trim()).filter(Boolean);
+    }
+
+    function joinRubrics(values) {
+      return values.filter(Boolean).join(" | ");
+    }
+
+    function isDisagreement(row) {
+      const audit = String(row.audit_label || "").trim().toLowerCase();
+      const llm = String(row.llm_decision || "").trim().toLowerCase();
+      return (audit === "pass" || audit === "reject") && (llm === "pass" || llm === "reject") && audit !== llm;
+    }
+
+    function passesFilter(row) {
+      const filter = el("filterSelect").value;
+      if (filter === "disagreement" && !isDisagreement(row)) return false;
+      if (filter === "missing_human_reasoning" && String(row.human_reasoning || "").trim()) return false;
+      if (filter === "second_pass_ok" && row.second_pass_status !== "ok") return false;
+      if (filter === "second_pass_need_review" && row.second_pass_status !== "need_review") return false;
+      if (filter === "pass" && row.audit_label !== "pass") return false;
+      if (filter === "reject" && row.audit_label !== "reject") return false;
+
+      const query = el("searchInput").value.trim().toLowerCase();
+      if (!query) return true;
+      const haystack = [
+        row.sample_id,
+        row.product_name,
+        row.topic_titles,
+        row.coterie_names,
+        row.text,
+        row.ai_reply,
+        row.human_reasoning,
+        row.review_note
+      ].join("\n").toLowerCase();
+      return haystack.includes(query);
+    }
+
+    function saveCurrent() {
+      const row = currentRow();
+      if (!row) return;
+      row.human_reasoning = el("humanReasoning").value;
+      row.review_note = el("reviewNote").value;
+      row.violated_rubrics = joinRubrics(
+        Array.from(document.querySelectorAll(".rubric-check:checked")).map((input) => input.value)
+      );
+      updateStats();
+      renderList();
+    }
+
+    function currentRow() {
+      return filtered[currentFilteredIndex] || null;
+    }
+
+    function updateFilter() {
+      saveCurrent();
+      filtered = rows.filter(passesFilter);
+      currentFilteredIndex = Math.min(currentFilteredIndex, Math.max(filtered.length - 1, 0));
+      updateStats();
+      renderList();
+      loadCurrent();
+    }
+
+    function updateStats() {
+      el("headerStatus").textContent = rows.length ? `已加载 ${rows.length} 条` : "未加载";
+      el("totalCount").textContent = rows.length;
+      el("filteredCount").textContent = filtered.length;
+      el("disagreementCount").textContent = rows.filter(isDisagreement).length;
+      el("missingReasoningCount").textContent = rows.filter((row) => !String(row.human_reasoning || "").trim()).length;
+    }
+
+    function renderList() {
+      const list = el("list");
+      list.innerHTML = "";
+      filtered.forEach((row, index) => {
+        const button = document.createElement("button");
+        button.className = `item${index === currentFilteredIndex ? " active" : ""}`;
+        button.innerHTML = `
+          <div class="item-title">
+            <span>${escapeHtml(row.sample_id || `row-${index + 1}`)}</span>
+            <span class="badge ${escapeHtml(row.audit_label || "")}">${escapeHtml(row.audit_label || "-")}</span>
+          </div>
+          <div class="item-subtitle">${escapeHtml(row.product_name || "")} ${isDisagreement(row) ? " · disagreement" : ""}</div>
+        `;
+        button.addEventListener("click", () => {
+          saveCurrent();
+          currentFilteredIndex = index;
+          renderList();
+          loadCurrent();
+        });
+        list.appendChild(button);
+      });
+    }
+
+    function renderRubricChecks(selected) {
+      const box = el("rubricsBox");
+      box.innerHTML = "";
+      const selectedSet = new Set(selected);
+      for (const rubric of rubrics) {
+        const label = document.createElement("label");
+        label.className = "rubric";
+        label.innerHTML = `
+          <input class="rubric-check" type="checkbox" value="${escapeAttr(rubric.name)}" ${selectedSet.has(rubric.name) ? "checked" : ""}>
+          <span>
+            <span class="rubric-name">${escapeHtml(rubric.name)}</span>
+            <span class="rubric-desc">${escapeHtml(rubric.description || "")}</span>
+          </span>
+        `;
+        box.appendChild(label);
+      }
+    }
+
+    function loadCurrent() {
+      const row = currentRow();
+      el("emptyState").hidden = Boolean(row);
+      el("editor").hidden = !row;
+      if (!row) return;
+
+      const position = `${currentFilteredIndex + 1} / ${filtered.length}`;
+      el("positionBadge").textContent = position;
+      el("auditBadge").textContent = `audit: ${row.audit_label || "-"}`;
+      el("auditBadge").className = `badge ${row.audit_label || ""}`;
+      el("llmBadge").textContent = `llm: ${row.llm_decision || "-"}`;
+      el("llmBadge").className = `badge ${row.llm_decision || ""}`;
+      el("secondPassBadge").textContent = `second: ${row.second_pass_status || "-"}`;
+
+      el("textView").textContent = row.text || "";
+      el("replyView").textContent = row.ai_reply || "";
+      el("metaView").textContent = [
+        `sample_id: ${row.sample_id || ""}`,
+        `product_name: ${row.product_name || ""}`,
+        `topic_titles: ${row.topic_titles || ""}`,
+        `coterie_names: ${row.coterie_names || ""}`,
+        `extend_type: ${row.extend_type || ""}`,
+        `comment_state: ${row.comment_state || ""}`
+      ].join("\n");
+      el("llmView").textContent = [
+        `first llm_decision: ${row.llm_decision || ""}`,
+        `first llm_reasoning: ${row.llm_reasoning || ""}`,
+        `second_pass_status: ${row.second_pass_status || ""}`,
+        `second_pass_violated_rubrics: ${row.second_pass_violated_rubrics || ""}`,
+        `second_pass_reasoning: ${row.second_pass_reasoning || ""}`,
+        `second_pass_error: ${row.second_pass_error || ""}`
+      ].join("\n\n");
+      el("humanReasoning").value = row.human_reasoning || "";
+      el("reviewNote").value = row.review_note || "";
+      renderRubricChecks(splitRubrics(row.violated_rubrics));
+      renderList();
+    }
+
+    function applySecondPass() {
+      const row = currentRow();
+      if (!row) return;
+      const rubricsValue = row.second_pass_violated_rubrics || "";
+      const reasoning = row.second_pass_reasoning || "";
+      if (rubricsValue) row.violated_rubrics = rubricsValue;
+      if (reasoning) row.human_reasoning = reasoning;
+      loadCurrent();
+    }
+
+    function mergeSecondPassResults(results) {
+      const rowsById = new Map(rows.map((row) => [String(row.sample_id || ""), row]));
+      let mergedCount = 0;
+      for (const result of results) {
+        const row = rowsById.get(String(result.custom_id || ""));
+        if (!row) continue;
+        mergedCount += 1;
+        row.second_pass_ok = Boolean(result.ok);
+        if (result.ok && result.annotation && typeof result.annotation === "object") {
+          row.second_pass_status = result.annotation.status || "";
+          row.second_pass_decision = result.annotation.decision || "";
+          row.second_pass_reasoning = result.annotation.reasoning || "";
+          row.second_pass_violated_rubrics = joinRubrics(splitRubrics(result.annotation.violated_rubrics));
+          row.second_pass_error = "";
+        } else {
+          row.second_pass_status = "failed";
+          row.second_pass_error = result.error || "";
+        }
+      }
+      updateFilter();
+      alert(`已合并 ${mergedCount} 条二次标注结果。`);
+    }
+
+    function clearRubrics() {
+      document.querySelectorAll(".rubric-check").forEach((input) => {
+        input.checked = false;
+      });
+    }
+
+    function exportRows(targetRows, fileName) {
+      saveCurrent();
+      const text = targetRows.map((row) => JSON.stringify(row)).join("\n") + "\n";
+      const blob = new Blob([text], { type: "application/jsonl;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    function escapeAttr(value) {
+      return escapeHtml(value).replaceAll("`", "&#096;");
+    }
+
+    el("reviewFile").addEventListener("change", async (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
+      try {
+        rows = parseJsonl(await file.text());
+        filtered = rows.filter(passesFilter);
+        currentFilteredIndex = 0;
+        updateStats();
+        renderList();
+        loadCurrent();
+      } catch (error) {
+        alert(error.message);
+      }
+    });
+
+    el("rubricsFile").addEventListener("change", async (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
+      rubrics = parseRubricsMarkdown(await file.text());
+      loadCurrent();
+    });
+
+    el("secondPassFile").addEventListener("change", async (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
+      if (!rows.length) {
+        alert("请先加载 human_review JSONL。");
+        return;
+      }
+      try {
+        mergeSecondPassResults(parseJsonl(await file.text()));
+      } catch (error) {
+        alert(error.message);
+      }
+    });
+
+    el("filterSelect").addEventListener("change", updateFilter);
+    el("searchInput").addEventListener("input", updateFilter);
+    el("prevBtn").addEventListener("click", () => {
+      saveCurrent();
+      currentFilteredIndex = Math.max(0, currentFilteredIndex - 1);
+      loadCurrent();
+    });
+    el("nextBtn").addEventListener("click", () => {
+      saveCurrent();
+      currentFilteredIndex = Math.min(Math.max(filtered.length - 1, 0), currentFilteredIndex + 1);
+      loadCurrent();
+    });
+    el("saveBtn").addEventListener("click", saveCurrent);
+    el("applySecondPassBtn").addEventListener("click", applySecondPass);
+    el("clearRubricsBtn").addEventListener("click", clearRubrics);
+    el("exportAllBtn").addEventListener("click", () => exportRows(rows, "human_review.calibrated.jsonl"));
+    el("exportFilteredBtn").addEventListener("click", () => exportRows(filtered, "human_review.filtered.calibrated.jsonl"));
+
+    updateStats();
+  </script>
+</body>
+</html>

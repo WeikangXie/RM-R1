@@ -19,6 +19,18 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from common import (
+    build_llm_url,
+    extract_completion_content,
+    extract_json_object,
+    read_jsonl,
+    read_rubrics,
+    rubrics_text,
+    text_or_empty,
+    write_json,
+    write_jsonl,
+)
+
 
 LABEL_BY_COMMENT_STATE = {
     "PUBLISHED": "pass",
@@ -39,46 +51,6 @@ SYSTEM_PROMPT = """你是金融内容社区的 AI 回复审核助手。请严格
 1. decision 只能是 pass 或 reject。
 2. 若 AI 回复包含收益承诺、暗示确定收益、诱导买卖、个性化投资建议、事实不确定却说得过满等风险，应倾向 reject。
 """
-
-
-def read_jsonl(path: Path) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    with path.open("r", encoding="utf-8") as f:
-        for line_no, line in enumerate(f, start=1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"{path}:{line_no} is not valid JSON: {exc}") from exc
-            if not isinstance(obj, dict):
-                raise ValueError(f"{path}:{line_no} must be a JSON object")
-            rows.append(obj)
-    return rows
-
-
-def read_rubrics(path: Path) -> list[dict[str, str]]:
-    rubrics: list[dict[str, str]] = []
-    with path.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line.startswith("|"):
-                continue
-            cells = [cell.strip() for cell in line.strip("|").split("|")]
-            if len(cells) < 2:
-                continue
-            name, description = cells[0], cells[1]
-            if name in {"Rubric", "-----------"} or set(name) <= {"-"}:
-                continue
-            rubrics.append({"name": name, "description": description})
-    if not rubrics:
-        raise ValueError(f"No rubrics parsed from {path}")
-    return rubrics
-
-
-def text_or_empty(value: Any) -> str:
-    return value if isinstance(value, str) else ""
 
 
 def clean_text(value: Any) -> str:
@@ -142,10 +114,6 @@ def make_sample(raw: dict[str, Any], index: int) -> dict[str, Any]:
     }
 
 
-def rubrics_text(rubrics: list[dict[str, str]]) -> str:
-    return "\n".join(f"- {r['name']}: {r['description']}" for r in rubrics)
-
-
 def user_prompt(sample: dict[str, Any], rubrics: list[dict[str, str]]) -> str:
     context = sample["source_context"]
     metadata = sample["metadata"]
@@ -191,41 +159,6 @@ def normalize_annotation(annotation: dict[str, Any]) -> dict[str, Any]:
         "reasoning": text_or_empty(annotation.get("reasoning")).strip(),
         "decision": decision,
     }
-
-
-def extract_json_object(text: str) -> dict[str, Any]:
-    content = text.strip()
-    if content.startswith("```"):
-        lines = [line for line in content.splitlines() if not line.strip().startswith("```")]
-        content = "\n".join(lines).strip()
-    start = content.find("{")
-    end = content.rfind("}")
-    if start == -1 or end == -1 or end < start:
-        raise ValueError("LLM response does not contain a JSON object")
-    parsed = json.loads(content[start : end + 1])
-    if not isinstance(parsed, dict):
-        raise ValueError("LLM response JSON must be an object")
-    return parsed
-
-
-def extract_completion_content(response: dict[str, Any]) -> str:
-    """Read common OpenAI-compatible chat completion response shapes."""
-    choices = response.get("choices")
-    if isinstance(choices, list) and choices:
-        first = choices[0]
-        if isinstance(first, dict):
-            message = first.get("message")
-            if isinstance(message, dict) and isinstance(message.get("content"), str):
-                return message["content"]
-            if isinstance(first.get("text"), str):
-                return first["text"]
-    if isinstance(response.get("content"), str):
-        return response["content"]
-    raise ValueError("Cannot find completion text in LLM response")
-
-
-def build_llm_url(base_url: str, model: str) -> str:
-    return f"{base_url.rstrip('/')}/llm/{model}/v1/chat/completions"
 
 
 def call_llm(task: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
@@ -315,13 +248,6 @@ def make_human_review_row(sample: dict[str, Any], llm_annotation: dict[str, Any]
         "ai_reply": sample["ai_reply"],
     }
 
-
-def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
-    with path.open("w", encoding="utf-8") as f:
-        for row in rows:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Prepare domain content RM data artifacts.")
     parser.add_argument("--input", type=Path, required=True, help="Raw company comment JSONL.")
@@ -392,7 +318,7 @@ def main() -> None:
         "llm_annotation_counts": dict(Counter("ok" if item.get("ok") else "failed" for item in llm_results)),
         "outputs": {name: str(path) for name, path in paths.items() if name != "summary"},
     }
-    paths["summary"].write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_json(paths["summary"], summary)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 

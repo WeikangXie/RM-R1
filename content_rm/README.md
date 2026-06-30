@@ -57,6 +57,12 @@ Generated files:
 - `human_review.jsonl`: review sheet in JSONL form. Human reviewers fill reasoning and notes, not a second decision label.
 - `summary.json`: counts and output paths for quick checks.
 
+Review fields:
+
+- `human_reasoning`: final reviewer-calibrated explanation used by SFT data building when present.
+- `violated_rubrics`: final reviewer-calibrated rubric names, separated with ` | ` when multiple rubrics are selected.
+- `review_note`: internal reviewer note for uncertainty, label conflicts, follow-up checks, or why a row should stay out of training. It is not used as an SFT target by default.
+
 Optional debug artifact:
 
 - `normalized_samples.jsonl`: write it with `--write-normalized` when you need to inspect field cleanup.
@@ -87,6 +93,36 @@ The endpoint path is built as:
 Only the necessary request fields are sent: `model`, `messages`, `max_tokens`, `temperature`, `top_p`, `stream`, `response_format`, and optional `seed`. `response_format` defaults to `json_object`, matching the company interface definition.
 
 When `--call-llm` is enabled, the script also writes `llm_annotations.jsonl` and pre-fills `llm_decision`, `llm_reasoning`, and `violated_rubrics` in the human review file.
+
+## Second-Pass Review For Disagreements
+
+When first-pass `llm_decision` disagrees with the operator `audit_label`, run a label-conditioned second pass. The second pass does not decide the final label; it tries to explain the fixed operator label using rubrics, or marks the row as `need_review`.
+
+Dry-run the disagreement selection first:
+
+```bash
+python3 content_rm/data/second_pass_review.py \
+  --human-review content_rm/data/local/review/human_review.jsonl \
+  --rubrics content_rm/data/rubrics.md \
+  --output content_rm/data/local/review/second_pass_annotations.jsonl \
+  --dry-run
+```
+
+Call the company-internal LLM for selected disagreements:
+
+```bash
+python3 content_rm/data/second_pass_review.py \
+  --human-review content_rm/data/local/review/human_review.jsonl \
+  --rubrics content_rm/data/rubrics.md \
+  --output content_rm/data/local/review/second_pass_annotations.jsonl \
+  --llm-base-url http://your-host:your-port \
+  --llm-model your-model-name \
+  --llm-authorization "Bearer your-token"
+```
+
+The script writes `second_pass_annotations.jsonl` and `second_pass_summary.json` in the output directory. It does not overwrite `human_review.jsonl`.
+
+For manual calibration, open `content_rm/data/review_calibration.html` in a browser, load `human_review.jsonl`, optionally load `rubrics.md` and `second_pass_annotations.jsonl`, edit `violated_rubrics`, `human_reasoning`, and `review_note`, then export a calibrated JSONL. Final SFT data uses `audit_label`, `violated_rubrics`, and `human_reasoning`; `review_note` remains an internal note.
 
 ## Build Reviewed SFT Data
 
