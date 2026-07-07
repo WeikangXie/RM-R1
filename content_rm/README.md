@@ -9,6 +9,8 @@ The original RM-R1 code is left in place. New business code is grouped here by w
 - `rl/`: reserved for the later RL route.
 - `docs/`: project progress and decision notes.
 
+For the current project handoff and next-stage checklist, start with [`docs/handoff.md`](docs/handoff.md).
+
 ## Local Data
 
 Local data is intentionally ignored by git:
@@ -226,3 +228,16 @@ bash content_rm/sft/llamafactory/train_ascend_lora.sh
 ```
 
 See [`sft/llamafactory/README.md`](sft/llamafactory/README.md) for the full list of environment overrides.
+
+## Next: SFT Evaluation
+
+The next stage is to evaluate the trained SFT model on business-task metrics. Platform ROUGE/BLEU is useful as a training signal, but the model should be selected by audit behavior:
+
+- valid JSON/schema rate
+- `decision` accuracy against `audit_label`
+- pass/reject precision, recall, and F1
+- false pass count and rate
+- rubric match quality
+- reasoning quality by sampled human review
+
+The recommended v1 route is offline evaluation: freeze a gold eval set under `content_rm/data/local/eval/`, export model predictions from the platform or deployment service, then score the prediction JSONL with a local eval script. See [`docs/handoff.md`](docs/handoff.md) for the proposed file contracts and immediate next tasks.

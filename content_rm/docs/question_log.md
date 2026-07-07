@@ -203,3 +203,10 @@
 - 回答：一个 step 通常取一个 batch 的样本，完成 tokenize/padding/mask 后前向计算 logits，再对有效 label token 计算交叉熵 loss，反向传播并更新参数。若使用 gradient accumulation，多个 micro-batch 会先累积梯度，达到设定次数后才执行一次 optimizer update；平台显示的 step 通常指 optimizer step。
 - 可能缺乏的知识：batch、micro-batch、gradient accumulation、optimizer step 与样本条数不是同一个概念。
 - Decision：解释训练曲线时不要把 step 简单理解成“训练了几条样本”；要结合 batch size、gradient accumulation、epoch、有效 token 数一起看。
+
+## 2026-07-07 进入 SFT Eval 阶段
+
+### 问题：SFT 训练结束后，是否可以直接用平台 ROUGE/BLEU 判断模型好坏？
+- 回答：不能只用 ROUGE/BLEU。当前任务的核心是金融内容社区 AI 回复审核，平台文本相似度指标只能说明模型输出和参考答案文字更接近，不直接等价于审核能力更强。
+- 可能缺乏的知识：生成式文本指标会被 reasoning 文案相似度、JSON 格式、参考答案写法影响；审核任务更关注 `decision` 是否正确、违规 rubrics 是否合理、是否漏放高风险样本。
+- Decision：SFT 后评估阶段以业务审核指标为主，包括 JSON/schema 合法率、`decision` accuracy、pass/reject precision/recall/F1、false pass、rubric match、reasoning 人工抽检。ROUGE/BLEU 仅作为辅助参考。
