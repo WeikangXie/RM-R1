@@ -210,3 +210,47 @@
 - 回答：不能只用 ROUGE/BLEU。当前任务的核心是金融内容社区 AI 回复审核，平台文本相似度指标只能说明模型输出和参考答案文字更接近，不直接等价于审核能力更强。
 - 可能缺乏的知识：生成式文本指标会被 reasoning 文案相似度、JSON 格式、参考答案写法影响；审核任务更关注 `decision` 是否正确、违规 rubrics 是否合理、是否漏放高风险样本。
 - Decision：SFT 后评估阶段以业务审核指标为主，包括 JSON/schema 合法率、`decision` accuracy、pass/reject precision/recall/F1、false pass、rubric match、reasoning 人工抽检。ROUGE/BLEU 仅作为辅助参考。
+
+## 2026-07-08 Git Worktree 与分支理解
+
+### 问题：本地工作区、worktree、branch、HEAD 分别是什么？
+- 回答：本地工作区本质上也是一个 worktree，即一份真实文件夹；Codex 也会为不同 thread 创建独立 worktree。branch 不是文件夹，而是一个名字，指向某个最新 commit；从这个 commit 可以沿父子关系追溯到一串历史。HEAD 是当前 worktree 的位置：可以指向 branch，也可以直接指向 commit。
+- Decision：理解当前状态时先确认“我在哪个物理文件夹/worktree”，再确认 `HEAD` 是否挂在某个 branch 上。
+
+### 问题：什么是 detached HEAD？
+- 回答：正常状态是 `HEAD -> branch -> commit`，新提交会让 branch 自动移动到新 commit。detached HEAD 是 `HEAD -> commit`，当前 worktree 直接站在某个 commit 上，没有挂在 branch 名字上；可以改代码，但若继续提交，最好先创建分支保护新 commit。
+- Decision：detached HEAD 不是错误，但不适合作为长期开发状态。
+
+### 问题：为什么同一个本地 branch 不能同时被两个 worktree checkout？
+- 回答：branch 是共享的本地指针。如果两个 worktree 同时挂在同一个 branch 上，一个 worktree 提交后会移动该 branch 指针，但另一个 worktree 的真实文件不会自动刷新，容易造成“分支指针已更新、文件内容仍旧”的混乱状态。
+- Decision：多个 worktree 可以基于同一个 commit，但应使用不同 branch，或让后创建的 worktree detached 在该 commit 上。
+
+### 问题：checkout / 本地检出是什么意思？
+- 回答：Git 里的 checkout 可以理解为把某个 branch/commit 对应的文件内容铺到当前 worktree，并让 HEAD 指向它。Codex UI 里的“本地检出/移交到 local”是把当前 Codex 临时 worktree 的对话状态移交到主工作区，让 Cursor 打开的本地项目目录与该对话使用同一份工作区。
+- Decision：本地检出不是 push、不是 PR、也不是自动合并到 `main`；它会影响主工作区当前 checkout 的分支。
+
+### 问题：新建 thread 选择某个分支时，能看到哪些内容？
+- 回答：新 thread 看到的是该 branch 当前指向的 commit 以及被 Git 跟踪的文件。如果原 worktree 中有未提交改动，新 thread 看不到；如果文件在 ignored 目录中，例如 `content_rm/data/local/`，即使选择同一 branch 也不会自动出现。
+- Decision：代码文件要让新 thread 看见，应先 commit 到 branch；ignored 本地数据要让新 thread 看见，应放到主工作区并通过 `.worktreeinclude` 或手动复制带入目标 worktree。
+
+### 问题：`.worktreeinclude` 的作用是什么？
+- 回答：`.worktreeinclude` 是 Codex 创建新 worktree 时用于携带 ignored 本地文件的清单，不是 Git 原生同步机制。它不会实时同步不同 worktree，也不会把某个 worktree 中后来新增的 ignored 文件自动复制到其他 worktree。
+- Decision：`content_rm/data/local/` 这类本地数据若需要被新 Codex thread 使用，应优先放在主工作区，并确认 `.worktreeinclude` 包含对应路径。
+
+### 问题：worktree 是否可以像另一台机器一样提交和推送？
+- 回答：可以。每个 worktree 都是一份独立物理工作区，可以在自己的 branch 上 commit/push。push 被远端拒绝时，处理方式与多人协作类似：先 fetch/pull 或 rebase，解决冲突后再 push。区别是多个 worktree 共享同一个本地 Git 仓库的 branch、commit 对象和远端配置。
+- Decision：worktree 的文件改动彼此隔离，但本地 branch 名字是共享资源；操作前应确认当前 worktree、当前 branch 和是否有未提交改动。
+
+### 问题：detached HEAD 上的 commit 能否 push？它是不是孤立 commit？
+- 回答：detached HEAD 上也可以产生 commit。若没有 branch、tag、HEAD 或 reflog 等引用指向它，之后切走就可能变成不好找的 dangling commit；但执行 `git push origin HEAD:<remote-branch>` 会把当前 HEAD 指向的 commit 推到远端分支，让远端 branch 指向它，因此不是制造孤立 commit。commit hash 基本可视为全局唯一；普通 commit 通常有一个父 commit，merge commit 可以有多个父 commit，root commit 没有父 commit。
+- Decision：detached HEAD 上若要保留工作，优先先 `git switch -c <branch>` 再提交/推送；也可以用 `git push origin HEAD:<remote-branch>` 直接把当前 commit 推成远端分支。
+
+### 问题：`git push --set-upstream origin codex/post-train-platform-sft` 中的 `--set-upstream` 和 `origin` 分别是什么意思？
+- 回答：`origin` 是远端仓库的名字，通常是 clone 仓库时 Git 自动创建的默认远端别名，不是分支名。`--set-upstream` 用来建立本地分支和远端分支的 tracking 关系，例如让本地 `codex/post-train-platform-sft` 默认跟踪 `origin/codex/post-train-platform-sft`。
+- 可能缺乏的知识：远端名、远端分支、本地分支和 upstream tracking 是不同概念。远端名可以通过 `git remote -v` 查看；upstream 关系建立后，在该分支上可以直接执行 `git push` 或 `git pull`，不必每次完整指定远端和分支。
+- Decision：第一次推送新本地分支时可以使用 `git push --set-upstream origin <branch>`；之后若 upstream 已建立，日常推送直接使用 `git push` 即可。
+
+### 问题：除了 `origin`，一个本地 Git 仓库能否关联多个远端仓库？
+- 回答：可以。一个本地仓库可以配置多个 remote，例如 `origin`、`upstream`、`company`、`backup`。`origin` 只是默认名称，不具备唯一性或特殊权限。
+- 可能缺乏的知识：remote 是本地配置中的远端地址别名；每个 remote 可以有独立的 fetch/push 地址。常见用法是 `origin` 指向自己的 fork 或主推送仓库，`upstream` 指向原始项目仓库，`company` 指向公司内部仓库。
+- Decision：需要查看所有远端时使用 `git remote -v`；需要和特定远端交互时显式写远端名，例如 `git fetch upstream`、`git pull upstream main`、`git push company <branch>`。

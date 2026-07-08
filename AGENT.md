@@ -8,10 +8,18 @@
 - 尽量以最小化的原则写代码，一定要避免过度设计
 - 写完一段代码后记得加上注释，说明这一段代码在做什么，为什么需要这么做，一定要讲清楚
 - 你在本机写，写完后由我将代码copy回公司内部
+- 当要求输出你的判断或猜想的时候，进一步要求用户提供资料或信息来验证你的判断。
+    - 例如用户说在SFT之后模型输出的rubrics总是为空，你给出了如下的判断或猜测
+        - The gold training data itself has reject rows with empty rubrics.
+        - The operator rejected the item for reasons not covered by current rubrics.
+        - The model learned to output the final label but did not learn the explanation structure.
+        - The parser/eval script is losing rubrics because the model outputs them in the wrong format.
+        - The prompt says rubrics “can be empty” but does not strictly require non-empty rubrics for reject.
+    - 基于上述的猜测，给出能够让用户验证你猜测的方法或让用户提供更多的信息来验证你的判断
 
 ## 用户背景
 - 金融app内容社区的java开发
-- 对强化学习有核心概念上的了解，对SFT知道很少
+- 对SFT和RL有一些核心概念上的了解
 - 后续希望进入AI行业相关岗位，需要深入学习理解本项目
 - 用户在公司内部全权负责该项目，从数据，训练，评估，部署
 
