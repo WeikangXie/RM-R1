@@ -18,5 +18,5 @@ dev = [
 package = false
 
 [tool.pytest.ini_options]
-testpaths = ["content_rm/tests"]
-pythonpath = ["content_rm/data"]
+testpaths = ["tests"]
+pythonpath = ["."]

@@ -6,42 +6,45 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import sys
 import time
 from collections import Counter
 from pathlib import Path
 from typing import Any
 
+CONTENT_RM_ROOT = Path(__file__).resolve().parents[1]
+if str(CONTENT_RM_ROOT) not in sys.path:
+    sys.path.insert(0, str(CONTENT_RM_ROOT))
+
 import requests
 from bs4 import BeautifulSoup
 from pydantic import ValidationError
 
-from async_pipeline import (
+from infrastructure.async_pipeline import (
+    AsyncBatchTask,
+    AsyncRequestParams,
     append_retry_jobs,
     collect_latest_results,
     initialize_run,
-    load_manifest,
-    load_tasks,
     manifest_path,
-    mark_failed_comments,
+    mark_failed_tasks,
     plan_summary,
     refresh_status,
     status_summary,
     submit_run,
 )
-from cmb_async_model import CmbAsyncLLM
-from common import (
+from infrastructure.cmb_async_model import CmbAsyncLLM
+from infrastructure.common import (
     build_llm_url,
     extract_completion_content,
     extract_json_object,
+    model_rows,
     read_jsonl,
-    read_rubrics,
-    rubrics_text,
     text_or_empty,
     write_json,
     write_jsonl,
 )
-from config import (
-    FIRST_PASS_LLM_MAX_TOKENS,
+from infrastructure.config import (
     LLM_AUTHORIZATION,
     LLM_BASE_URL,
     LLM_MODEL,
@@ -52,16 +55,16 @@ from config import (
     LLM_TIMEOUT,
     LLM_TOP_P,
 )
-from records import (
+from data.annotation_config import FIRST_PASS_LLM_MAX_TOKENS
+from data.records import (
     AnnotationTask,
-    AsyncRequestParams,
     FirstPassAnnotation,
     LLMAnnotationRecord,
     Message,
     RawComment,
     ReviewContext,
-    model_rows,
 )
+from data.rubric_utils import read_rubrics, rubrics_text
 
 LABEL_BY_COMMENT_STATE = {"PUBLISHED": "pass", "HIDE": "reject"}
 
@@ -276,6 +279,15 @@ def request_params() -> AsyncRequestParams:
     )
 
 
+def to_async_tasks(tasks: list[AnnotationTask]) -> list[AsyncBatchTask]:
+    """Adapt business tasks to the platform-only async contract."""
+
+    return [
+        AsyncBatchTask(custom_id=str(task.comment_id), messages=task.messages)
+        for task in tasks
+    ]
+
+
 def write_annotation_outputs(
     output_dir: Path,
     tasks: list[AnnotationTask],
@@ -301,10 +313,9 @@ def collect_async_annotations(
     client: CmbAsyncLLM,
     run_dir: Path,
     output_dir: Path,
+    tasks: list[AnnotationTask],
     valid_rubrics: set[str],
 ) -> dict[str, Any]:
-    manifest = load_manifest(run_dir)
-    tasks = load_tasks(manifest)
     collected = collect_latest_results(client, run_dir)
     records: list[LLMAnnotationRecord] = []
     failed_ids: list[str] = []
@@ -322,7 +333,7 @@ def collect_async_annotations(
         records.append(record)
         if not record.ok:
             failed_ids.append(comment_id)
-    mark_failed_comments(run_dir, failed_ids)
+    mark_failed_tasks(run_dir, failed_ids)
     return write_annotation_outputs(output_dir, tasks, records)
 
 
@@ -357,6 +368,7 @@ def main() -> None:
     rubrics = read_rubrics(args.rubrics)
     valid_rubrics = {item["name"] for item in rubrics}
     tasks = build_tasks(rows, rubrics)
+    async_tasks = to_async_tasks(tasks)
     run_dir = args.run_dir or args.output_dir / "async" / "first_pass"
     output_path = args.output_dir / "llm_annotations.jsonl"
 
@@ -374,36 +386,28 @@ def main() -> None:
         )
 
     if args.async_action == "plan":
-        print(json.dumps(plan_summary(tasks, args.batch_size), ensure_ascii=False, indent=2))
+        print(
+            json.dumps(
+                plan_summary(async_tasks, args.batch_size),
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         return
 
     if args.async_action:
-        if args.async_action == "submit":
-            initialize_run(
-                run_dir=run_dir,
-                stage="first_pass",
-                tasks=tasks,
-                input_path=args.input,
-                rubrics_path=args.rubrics,
-                output_path=output_path,
-                model=LLM_MODEL,
-                batch_size=args.batch_size,
-                params=request_params(),
-            )
-        else:
-            if not manifest_path(run_dir).exists():
-                raise ValueError(f"async run does not exist: {run_dir}")
-            initialize_run(
-                run_dir=run_dir,
-                stage="first_pass",
-                tasks=tasks,
-                input_path=args.input,
-                rubrics_path=args.rubrics,
-                output_path=output_path,
-                model=LLM_MODEL,
-                batch_size=args.batch_size,
-                params=request_params(),
-            )
+        if args.async_action != "submit" and not manifest_path(run_dir).exists():
+            raise ValueError(f"async run does not exist: {run_dir}")
+        initialize_run(
+            run_dir=run_dir,
+            run_name="content-rm-first-pass",
+            tasks=async_tasks,
+            input_paths={"input": args.input, "rubrics": args.rubrics},
+            output_path=output_path,
+            model=LLM_MODEL,
+            batch_size=args.batch_size,
+            params=request_params(),
+        )
 
         with make_async_client() as client:
             if args.async_action == "submit":
@@ -411,7 +415,13 @@ def main() -> None:
             elif args.async_action == "status":
                 result = status_summary(refresh_status(client, run_dir))
             elif args.async_action == "collect":
-                result = collect_async_annotations(client, run_dir, args.output_dir, valid_rubrics)
+                result = collect_async_annotations(
+                    client,
+                    run_dir,
+                    args.output_dir,
+                    tasks,
+                    valid_rubrics,
+                )
             else:
                 append_retry_jobs(run_dir)
                 result = submit_run(client, run_dir)

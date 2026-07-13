@@ -1,10 +1,19 @@
-"""Pydantic request models for the company chat-completions APIs."""
+"""Pydantic request models shared by company chat-completions clients."""
 
 from __future__ import annotations
 
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 
-from records import Message, StrictModel
+
+class StrictModel(BaseModel):
+    """Base model for strict infrastructure contracts."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class Message(StrictModel):
+    role: str
+    content: str
 
 
 class ChatCompletionsReq(StrictModel):

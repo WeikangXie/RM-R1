@@ -6,18 +6,24 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, TypeVar
 
-from common import read_rubrics, rubrics_text, write_json, write_jsonl
-from records import (
+CONTENT_RM_ROOT = Path(__file__).resolve().parents[1]
+if str(CONTENT_RM_ROOT) not in sys.path:
+    sys.path.insert(0, str(CONTENT_RM_ROOT))
+
+from infrastructure.common import read_model_jsonl, write_json, write_jsonl
+
+from data.records import (
     FirstPassAnnotation,
     HumanReviewRecord,
     LLMAnnotationRecord,
     SecondPassRecord,
-    read_model_jsonl,
 )
+from data.rubric_utils import read_rubrics, rubrics_text
 
 SYSTEM_PROMPT = """你是金融内容社区的 AI 回复审核助手。请严格依据给定 rubrics 判断 AI 回复是否可以通过运营审核。
 

@@ -3,17 +3,24 @@ from __future__ import annotations
 from pathlib import Path
 from uuid import UUID
 
-from async_pipeline import (
+from infrastructure.async_pipeline import (
+    AsyncBatchTask,
+    AsyncRequestParams,
     append_retry_jobs,
     collect_latest_results,
     initialize_run,
     load_manifest,
-    mark_failed_comments,
+    mark_failed_tasks,
     save_manifest,
     submit_run,
 )
-from cmb_async_model import AsyncResultItem, AsyncTaskContent, AsyncTaskDetail, TaskState
-from records import AnnotationTask, AsyncRequestParams, Message, ReviewContext
+from infrastructure.chat_completions_req import Message
+from infrastructure.cmb_async_model import (
+    AsyncResultItem,
+    AsyncTaskContent,
+    AsyncTaskDetail,
+    TaskState,
+)
 
 
 class FakeAsyncClient:
@@ -77,20 +84,19 @@ class FakeAsyncClient:
         return list(reversed(results))
 
 
-def make_tasks(count: int) -> list[AnnotationTask]:
-    context = ReviewContext(ai_reply="reply")
+def make_tasks(count: int) -> list[AsyncBatchTask]:
     return [
-        AnnotationTask(
-            comment_id=UUID(int=index + 1),
-            audit_label="pass",
-            context=context,
+        AsyncBatchTask(
+            custom_id=str(UUID(int=index + 1)),
             messages=[Message(role="user", content="prompt")],
         )
         for index in range(count)
     ]
 
 
-def create_run(tmp_path: Path, count: int, batch_size: int = 500) -> tuple[Path, list[AnnotationTask]]:
+def create_run(
+    tmp_path: Path, count: int, batch_size: int = 500
+) -> tuple[Path, list[AsyncBatchTask]]:
     source = tmp_path / "input.jsonl"
     rubrics = tmp_path / "rubrics.md"
     output = tmp_path / "llm_annotations.jsonl"
@@ -100,10 +106,9 @@ def create_run(tmp_path: Path, count: int, batch_size: int = 500) -> tuple[Path,
     run_dir = tmp_path / "run"
     initialize_run(
         run_dir=run_dir,
-        stage="first_pass",
+        run_name="test-first-pass",
         tasks=tasks,
-        input_path=source,
-        rubrics_path=rubrics,
+        input_paths={"input": source, "rubrics": rubrics},
         output_path=output,
         model="model",
         batch_size=batch_size,
@@ -115,34 +120,34 @@ def create_run(tmp_path: Path, count: int, batch_size: int = 500) -> tuple[Path,
 def test_batches_and_custom_ids_are_comment_ids(tmp_path: Path) -> None:
     run_dir, tasks = create_run(tmp_path, 1001)
     manifest = load_manifest(run_dir)
-    assert [len(job.comment_ids) for job in manifest.jobs] == [500, 500, 1]
+    assert [len(job.custom_ids) for job in manifest.jobs] == [500, 500, 1]
     assert "authorization" not in (run_dir / "manifest.json").read_text(encoding="utf-8").lower()
 
     client = FakeAsyncClient()
     submit_run(client, run_dir)
     uploaded = [content for batch in client.contents.values() for content in batch]
-    assert [content.custom_id for content in uploaded] == [str(task.comment_id) for task in tasks]
+    assert [content.custom_id for content in uploaded] == [task.custom_id for task in tasks]
 
     collected = collect_latest_results(client, run_dir)
     assert not collected.errors
-    assert set(collected.items) == {str(task.comment_id) for task in tasks}
+    assert set(collected.items) == {task.custom_id for task in tasks}
 
 
 def test_failed_item_can_be_retried_without_resubmitting_successes(tmp_path: Path) -> None:
     run_dir, tasks = create_run(tmp_path, 3, batch_size=2)
-    failed_id = str(tasks[1].comment_id)
+    failed_id = tasks[1].custom_id
     client = FakeAsyncClient()
     client.omit_once.add(failed_id)
     submit_run(client, run_dir)
     first = collect_latest_results(client, run_dir)
     assert first.errors == {failed_id: "platform did not return a result"}
 
-    mark_failed_comments(run_dir, list(first.errors))
+    mark_failed_tasks(run_dir, list(first.errors))
     append_retry_jobs(run_dir)
     submit_run(client, run_dir)
     second = collect_latest_results(client, run_dir)
     assert not second.errors
-    assert set(second.items) == {str(task.comment_id) for task in tasks}
+    assert set(second.items) == {task.custom_id for task in tasks}
     assert len(client.contents["task-3"]) == 1
     assert client.contents["task-3"][0].custom_id == failed_id
 
@@ -155,7 +160,7 @@ def test_submit_resumes_after_upload_response_was_not_persisted(tmp_path: Path) 
     for task in tasks:
         client.contents[task_id].append(
             AsyncTaskContent(
-                custom_id=str(task.comment_id),
+                custom_id=task.custom_id,
                 messages=task.messages,
                 model="model",
             )

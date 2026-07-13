@@ -1,22 +1,16 @@
-"""Validated records shared by the Content RM data pipeline."""
+"""Validated business records for the Content RM data pipeline."""
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from infrastructure.chat_completions_req import Message, StrictModel
+
 Label = Literal["pass", "reject"]
 ReviewStatus = Literal["ok", "need_review"]
-RunStage = Literal["first_pass", "second_pass"]
-JobLifecycle = Literal["planned", "initialized", "uploaded", "submitted"]
-
-
-class StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
 
 
 class RawTopic(BaseModel):
@@ -167,67 +161,9 @@ class SecondPassRecord(StrictModel):
         return self
 
 
-class Message(StrictModel):
-    role: str
-    content: str
-
-
 class AnnotationTask(StrictModel):
     comment_id: UUID
     audit_label: Label
     context: ReviewContext
     messages: list[Message]
     first_annotation: FirstPassAnnotation | None = None
-
-
-class AsyncRequestParams(StrictModel):
-    temperature: float | None = None
-    max_tokens: int | None = None
-    top_p: float | None = None
-    seed: int | None = None
-
-
-class AsyncJobRecord(StrictModel):
-    comment_ids: list[UUID]
-    attempt: int = 1
-    lifecycle: JobLifecycle = "planned"
-    task_id: str | None = None
-    platform_state: str | None = None
-    total: int | None = None
-    success: int | None = None
-    failed: int | None = None
-    error: str | None = None
-
-
-class AsyncRunManifest(StrictModel):
-    schema_version: int = 1
-    stage: RunStage
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    input_path: str
-    input_sha256: str
-    rubrics_path: str
-    rubrics_sha256: str
-    output_path: str
-    model: str
-    batch_size: int
-    params: AsyncRequestParams
-    task_snapshot: str
-    jobs: list[AsyncJobRecord] = Field(default_factory=list)
-    failed_comment_ids: list[UUID] = Field(default_factory=list)
-
-    @field_validator("batch_size")
-    @classmethod
-    def positive_batch_size(cls, value: int) -> int:
-        if value <= 0:
-            raise ValueError("batch_size must be positive")
-        return value
-
-
-def model_rows(rows: list[BaseModel]) -> list[dict[str, Any]]:
-    return [row.model_dump(mode="json") for row in rows]
-
-
-def read_model_jsonl(path: Path, model_type: type[BaseModel]) -> list[Any]:
-    from common import read_jsonl
-
-    return [model_type.model_validate(row) for row in read_jsonl(path)]

@@ -10,7 +10,7 @@ from urllib.parse import urljoin
 import requests
 from pydantic import ConfigDict, Field
 
-from records import Message, StrictModel
+from .chat_completions_req import Message, StrictModel
 
 
 class AsyncLLMError(RuntimeError):

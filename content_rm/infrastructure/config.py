@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local defaults for company LLM calls used by data scripts.
+"""Shared connection and request defaults for company LLM clients.
 
 Prefer setting LLM_AUTHORIZATION in the environment instead of writing tokens
 into this tracked file.
@@ -35,6 +35,3 @@ LLM_SEED = env_optional_int("LLM_SEED")
 LLM_TIMEOUT = env_float("LLM_TIMEOUT", 60.0)
 LLM_RETRIES = env_int("LLM_RETRIES", 2)
 LLM_RETRY_SLEEP = env_float("LLM_RETRY_SLEEP", 1.0)
-
-FIRST_PASS_LLM_MAX_TOKENS = env_int("FIRST_PASS_LLM_MAX_TOKENS", 512)
-SECOND_PASS_LLM_MAX_TOKENS = env_int("SECOND_PASS_LLM_MAX_TOKENS", 768)

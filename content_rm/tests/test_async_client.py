@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from cmb_async_model import AsyncTaskContent, AsyncTaskParams, CmbAsyncLLM
-from records import Message
+from infrastructure.chat_completions_req import Message
+from infrastructure.cmb_async_model import AsyncTaskContent, AsyncTaskParams, CmbAsyncLLM
 
 
 class FakeResponse:

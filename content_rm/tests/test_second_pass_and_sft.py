@@ -5,8 +5,8 @@ from uuid import UUID
 
 import pytest
 
-from build_sft_dataset import build_sft_rows, unique_by_comment_id
-from records import (
+from data.build_sft_dataset import build_sft_rows, unique_by_comment_id
+from data.records import (
     FirstPassAnnotation,
     HumanReviewRecord,
     LLMAnnotationRecord,
@@ -14,7 +14,7 @@ from records import (
     SecondPassAnnotation,
     SecondPassRecord,
 )
-from second_pass_review import build_tasks
+from data.second_pass_review import build_tasks
 
 
 RUBRICS = [{"name": "事实准确性", "description": "事实必须准确"}]

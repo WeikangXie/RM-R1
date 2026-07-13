@@ -5,8 +5,8 @@ from uuid import UUID
 import pytest
 from pydantic import ValidationError
 
-from prepare_dataset import build_tasks, parse_response_record
-from records import LLMAnnotationRecord, RawComment
+from data.prepare_dataset import build_tasks, parse_response_record, to_async_tasks
+from data.records import LLMAnnotationRecord, RawComment
 
 
 RUBRICS = [{"name": "事实准确性", "description": "事实必须准确"}]
@@ -62,6 +62,15 @@ def test_first_pass_response_uses_new_contract_only() -> None:
     assert dumped["comment_id"] == str(task.comment_id)
     assert "sample_id" not in dumped
     assert "custom_id" not in dumped
+
+
+def test_async_adapter_uses_comment_id_as_custom_id() -> None:
+    task = build_tasks(
+        [raw_row("12345678-1234-5678-1234-567812345678")], RUBRICS
+    )[0]
+    async_task = to_async_tasks([task])[0]
+    assert async_task.custom_id == str(task.comment_id)
+    assert async_task.messages == task.messages
 
 
 def test_first_pass_rejects_unknown_rubric() -> None:

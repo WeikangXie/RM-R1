@@ -254,3 +254,20 @@
 - 回答：可以。一个本地仓库可以配置多个 remote，例如 `origin`、`upstream`、`company`、`backup`。`origin` 只是默认名称，不具备唯一性或特殊权限。
 - 可能缺乏的知识：remote 是本地配置中的远端地址别名；每个 remote 可以有独立的 fetch/push 地址。常见用法是 `origin` 指向自己的 fork 或主推送仓库，`upstream` 指向原始项目仓库，`company` 指向公司内部仓库。
 - Decision：需要查看所有远端时使用 `git remote -v`；需要和特定远端交互时显式写远端名，例如 `git fetch upstream`、`git pull upstream main`、`git push company <branch>`。
+
+## 2026-07-13 Cursor 与 uv 项目管理
+
+### 问题：Cursor 文件右侧的 `1, U`、`4, U` 分别是什么意思？
+- 回答：数字通常是该文件当前的诊断问题数量，例如错误或警告，可在 Problems 面板中查看；`U` 是 Git 的 `Untracked`，表示文件尚未被 Git 跟踪，对应 `git status` 中的 `??`。文件加入暂存区后，状态通常会变为 `A`（Added）。
+- 可能缺乏的知识：编辑器诊断信息与 Git 文件状态是两套并列的装饰信息；数字不代表 Git 修改行数。
+- Decision：看到数字时到 Problems 面板检查诊断；看到 `U` 时根据文件是否应纳入版本管理决定是否执行 `git add`。
+
+### 问题：把 `pyproject.toml` 和 `uv.lock` 放在 `content_rm/`，与放在 RM-R1 仓库根目录有什么区别？
+- 回答：主要区别是 uv 项目边界。放在仓库根目录时，整个 RM-R1 默认被视为同一个 uv 项目，环境和锁文件通常位于根目录；放在 `content_rm/` 时，只有 Content RM 工具由这套依赖和锁文件管理，通常使用 `content_rm/.venv`，不会与仓库内 OpenRLHF 等其他 Python 项目混在一起。
+- 可能缺乏的知识：一个 Git 仓库可以包含多个独立的 Python/uv 项目；Git 仓库根目录不必等于 Python 项目根目录。
+- Decision：当前轻量数据工具的 `pyproject.toml` 和 `uv.lock` 放入 `content_rm/`，与训练框架环境保持隔离。
+
+### 问题：`uv sync --dev` 是做什么的？`uv --project content_rm` 又是什么意思？
+- 回答：`uv sync --dev` 根据当前项目的 `pyproject.toml` 和 `uv.lock` 创建或更新虚拟环境，并同步普通依赖及 `dev` 依赖组；它不会自动运行测试。`--project content_rm` 是 uv 的全局选项，用来明确指定 uv 项目目录，因此从 RM-R1 根目录可执行 `uv --project content_rm sync --dev`。它只改变 uv 查找项目配置、锁文件和虚拟环境的位置，不会把 shell 当前目录切换到 `content_rm/`，所以命令中的脚本等相对路径仍按当前 shell 目录解释。
+- 可能缺乏的知识：依赖同步、命令执行、项目根目录和 shell 当前工作目录是不同概念；`--project` 本身不是完整命令，后面仍需跟 `sync`、`run` 等子命令。
+- Decision：从 RM-R1 根目录操作 Content RM 时显式使用 `uv --project content_rm ...`；若希望同时切换命令工作目录，可先 `cd content_rm`，或使用 uv 的 `--directory content_rm` 选项。

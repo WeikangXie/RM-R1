@@ -1,15 +1,15 @@
-#!/usr/bin/env python3
-"""Shared helpers for content RM data scripts."""
+"""Generic serialization and LLM-response helpers."""
 
 from __future__ import annotations
 
 import json
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
+from pydantic import BaseModel
 
-VALID_LABELS = {"pass", "reject"}
+ModelT = TypeVar("ModelT", bound=BaseModel)
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -49,41 +49,12 @@ def text_or_empty(value: Any) -> str:
     return value if isinstance(value, str) else ""
 
 
-def read_rubrics(path: Path) -> list[dict[str, str]]:
-    rubrics: list[dict[str, str]] = []
-    with path.open("r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line.startswith("|"):
-                continue
-            cells = [cell.strip() for cell in line.strip("|").split("|")]
-            if len(cells) < 2:
-                continue
-            name, description = cells[0], cells[1]
-            if name in {"Rubric", "-----------"} or set(name) <= {"-"}:
-                continue
-            rubrics.append({"name": name, "description": description})
-    if not rubrics:
-        raise ValueError(f"No rubrics parsed from {path}")
-    return rubrics
+def model_rows(rows: list[BaseModel]) -> list[dict[str, Any]]:
+    return [row.model_dump(mode="json") for row in rows]
 
 
-def rubrics_text(rubrics: list[dict[str, str]]) -> str:
-    return "\n".join(f"- {r['name']}: {r['description']}" for r in rubrics)
-
-
-def parse_rubrics(value: Any) -> list[str]:
-    if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()]
-    if not isinstance(value, str) or not value.strip():
-        return []
-    if "|" in value:
-        parts = value.split("|")
-    elif "," in value:
-        parts = value.split(",")
-    else:
-        parts = [value]
-    return [part.strip() for part in parts if part.strip()]
+def read_model_jsonl(path: Path, model_type: type[ModelT]) -> list[ModelT]:
+    return [model_type.model_validate(row) for row in read_jsonl(path)]
 
 
 def extract_json_object(text: str) -> dict[str, Any]:

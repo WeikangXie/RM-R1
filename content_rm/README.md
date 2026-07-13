@@ -5,6 +5,7 @@ This module contains the business-domain data and training entrypoints for the f
 The original RM-R1 code is left in place. New business code is grouped here by workflow:
 
 - `data/`: raw-data adapters, SFT dataset builders, rubrics, and ignored local artifacts.
+- `infrastructure/`: reusable company LLM clients, API contracts, serialization helpers, and recoverable async batch orchestration. This layer has no dependency on `data/` business models.
 - `sft/`: SFT launchers for OpenRLHF and Ascend/LLaMA-Factory.
 - `rl/`: reserved for the later RL route.
 - `docs/`: project progress and decision notes.
@@ -48,11 +49,13 @@ The input JSONL is expected to contain only items that already have operator aud
 
 ## Environment
 
-The lightweight Content RM tools are managed by the root uv project. This environment is independent from the nested OpenRLHF training project.
+The lightweight Content RM tools are managed by the uv project in `content_rm/`. This environment is independent from the nested OpenRLHF training project.
+
+From the RM-R1 repository root:
 
 ```bash
-uv sync --dev
-uv run pytest
+uv --project content_rm sync --dev
+uv --project content_rm run pytest -c content_rm/pyproject.toml content_rm/tests
 ```
 
 ## First-Pass Annotation
@@ -62,7 +65,7 @@ Every generated business record is keyed by `comment_id`. The raw company field 
 Validate the input and estimate asynchronous batches without calling the platform:
 
 ```bash
-uv run python content_rm/data/prepare_dataset.py \
+uv --project content_rm run python content_rm/data/prepare_dataset.py \
   --input content_rm/data/local/raw/comment_data.jsonl \
   --rubrics content_rm/data/rubrics.md \
   --output-dir content_rm/data/local/review \
@@ -72,7 +75,7 @@ uv run python content_rm/data/prepare_dataset.py \
 For the synchronous endpoint, use `--call-llm`. It writes the enriched `llm_annotations.jsonl`, which contains the normalized review context and the model result; it does not create a full `human_review.jsonl`.
 
 ```bash
-uv run python content_rm/data/prepare_dataset.py \
+uv --project content_rm run python content_rm/data/prepare_dataset.py \
   --input content_rm/data/local/raw/comment_data.jsonl \
   --rubrics content_rm/data/rubrics.md \
   --output-dir content_rm/data/local/review \
@@ -82,7 +85,7 @@ uv run python content_rm/data/prepare_dataset.py \
 For thousands of rows, use the recoverable asynchronous flow. The default batch size is 500:
 
 ```bash
-uv run python content_rm/data/prepare_dataset.py \
+uv --project content_rm run python content_rm/data/prepare_dataset.py \
   --input content_rm/data/local/raw/comment_data.jsonl \
   --rubrics content_rm/data/rubrics.md \
   --output-dir content_rm/data/local/review \
@@ -94,7 +97,7 @@ uv run python content_rm/data/prepare_dataset.py \
 # --async-action retry-failed
 ```
 
-The run manifest, task snapshot, task IDs, attempts, and raw result pages are stored under `content_rm/data/local/review/async/first_pass/`. Credentials are never stored there. Both synchronous and asynchronous modes reuse `LLM_BASE_URL`, `LLM_MODEL`, and `LLM_AUTHORIZATION` from `content_rm/data/config.py` or the environment.
+The run manifest, task snapshot, task IDs, attempts, and raw result pages are stored under `content_rm/data/local/review/async/first_pass/`. Credentials are never stored there. Both synchronous and asynchronous modes reuse `LLM_BASE_URL`, `LLM_MODEL`, and `LLM_AUTHORIZATION` from `content_rm/infrastructure/config.py` or the environment.
 
 `--write-normalized` optionally writes `normalized_comments.jsonl` for debugging. With no LLM mode selected, the script only validates/counts the input and writes `summary.json`.
 
@@ -105,7 +108,7 @@ The second pass reads `llm_annotations.jsonl` directly and selects successful ro
 Dry-run the disagreement selection first:
 
 ```bash
-uv run python content_rm/data/second_pass_review.py \
+uv --project content_rm run python content_rm/data/second_pass_review.py \
   --llm-annotations content_rm/data/local/review/llm_annotations.jsonl \
   --rubrics content_rm/data/rubrics.md \
   --output content_rm/data/local/review/second_pass_annotations.jsonl \
@@ -115,7 +118,7 @@ uv run python content_rm/data/second_pass_review.py \
 Submit the selected rows asynchronously, then use `status`, `collect`, and `retry-failed` with the same arguments:
 
 ```bash
-uv run python content_rm/data/second_pass_review.py \
+uv --project content_rm run python content_rm/data/second_pass_review.py \
   --llm-annotations content_rm/data/local/review/llm_annotations.jsonl \
   --rubrics content_rm/data/rubrics.md \
   --output content_rm/data/local/review/second_pass_annotations.jsonl \
@@ -135,7 +138,7 @@ Each sparse human row contains only `comment_id`, `violated_rubrics`, `reasoning
 `llm_annotations.jsonl` is required; second-pass and sparse human annotations are optional:
 
 ```bash
-uv run python content_rm/data/build_sft_dataset.py \
+uv --project content_rm run python content_rm/data/build_sft_dataset.py \
   --llm-annotations content_rm/data/local/review/llm_annotations.jsonl \
   --second-pass-annotations content_rm/data/local/review/second_pass_annotations.jsonl \
   --human-review content_rm/data/local/review/human_review.jsonl \
@@ -161,7 +164,7 @@ Annotation precedence is sparse human review, successful `status=ok` second pass
 To build LLaMA-Factory Alpaca SFT files instead, pass `--write-llamafactory-alpaca`:
 
 ```bash
-uv run python content_rm/data/build_sft_dataset.py \
+uv --project content_rm run python content_rm/data/build_sft_dataset.py \
   --llm-annotations content_rm/data/local/review/llm_annotations.jsonl \
   --second-pass-annotations content_rm/data/local/review/second_pass_annotations.jsonl \
   --human-review content_rm/data/local/review/human_review.jsonl \
@@ -180,7 +183,7 @@ The LLaMA-Factory files are:
 To build the post-train platform single-turn JSONL file instead, pass `--write-post-train-platform`:
 
 ```bash
-uv run python content_rm/data/build_sft_dataset.py \
+uv --project content_rm run python content_rm/data/build_sft_dataset.py \
   --llm-annotations content_rm/data/local/review/llm_annotations.jsonl \
   --second-pass-annotations content_rm/data/local/review/second_pass_annotations.jsonl \
   --human-review content_rm/data/local/review/human_review.jsonl \
