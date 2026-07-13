@@ -267,7 +267,11 @@
   <main>
     <section class="sidebar">
       <div class="block">
-        <label for="reviewFile">human_review JSONL</label>
+        <label for="annotationFile">llm_annotations JSONL</label>
+        <input id="annotationFile" type="file" accept=".jsonl,.json">
+      </div>
+      <div class="block">
+        <label for="reviewFile">已有 human_review JSONL，可选</label>
         <input id="reviewFile" type="file" accept=".jsonl,.json">
       </div>
       <div class="block">
@@ -284,7 +288,7 @@
           <select id="filterSelect">
             <option value="all">全部</option>
             <option value="disagreement">LLM 与运营不一致</option>
-            <option value="missing_human_reasoning">缺少 human_reasoning</option>
+            <option value="unreviewed">尚未人工复核</option>
             <option value="second_pass_ok">二次标注 ok</option>
             <option value="second_pass_need_review">二次标注 need_review</option>
             <option value="pass">audit_label=pass</option>
@@ -293,26 +297,25 @@
         </div>
         <div>
           <label for="searchInput">搜索</label>
-          <input id="searchInput" type="text" placeholder="sample_id / 产品 / 文本">
+          <input id="searchInput" type="text" placeholder="comment_id / 产品 / 文本">
         </div>
       </div>
       <div class="block">
         <div class="stat"><span>总数</span><strong id="totalCount">0</strong></div>
         <div class="stat"><span>当前筛选</span><strong id="filteredCount">0</strong></div>
         <div class="stat"><span>LLM/运营不一致</span><strong id="disagreementCount">0</strong></div>
-        <div class="stat"><span>缺少 human_reasoning</span><strong id="missingReasoningCount">0</strong></div>
+        <div class="stat"><span>已人工复核</span><strong id="reviewedCount">0</strong></div>
       </div>
       <div class="block actions">
         <button id="prevBtn">上一条</button>
         <button id="nextBtn">下一条</button>
-        <button id="exportAllBtn" class="primary">导出全部 JSONL</button>
-        <button id="exportFilteredBtn">导出筛选 JSONL</button>
+        <button id="exportAllBtn" class="primary">导出 human_review JSONL</button>
       </div>
       <div id="list" class="list"></div>
     </section>
 
     <section class="content">
-      <div id="emptyState" class="empty">请选择 human_review.jsonl 开始校准。</div>
+      <div id="emptyState" class="empty">请选择 llm_annotations.jsonl 开始校准。</div>
       <div id="editor" hidden>
         <div class="block actions">
           <span id="positionBadge" class="badge"></span>
@@ -355,7 +358,7 @@
         </div>
 
         <div class="block">
-          <label for="humanReasoning">human_reasoning</label>
+          <label for="humanReasoning">reasoning</label>
           <textarea id="humanReasoning" placeholder="写入最终用于 SFT 的人工校准解释。"></textarea>
         </div>
 
@@ -385,6 +388,7 @@
     let filtered = [];
     let currentFilteredIndex = 0;
     let rubrics = defaultRubrics.slice();
+    let humanReviews = new Map();
 
     const el = (id) => document.getElementById(id);
 
@@ -426,6 +430,30 @@
       return values.filter(Boolean).join(" | ");
     }
 
+    function annotationToRow(record) {
+      if (!record || !record.comment_id) {
+        throw new Error("llm_annotations 中存在缺少 comment_id 的记录。");
+      }
+      const context = record.context || {};
+      const annotation = record.annotation || {};
+      return {
+        comment_id: String(record.comment_id),
+        audit_label: record.audit_label || "",
+        text: context.text || "",
+        ai_reply: context.ai_reply || "",
+        product_name: context.product_name || "",
+        extend_type: context.extend_type || "",
+        comment_state: context.comment_state || "",
+        topic_titles: Array.isArray(context.topic_titles) ? context.topic_titles.join(" | ") : "",
+        coterie_names: Array.isArray(context.coterie_names) ? context.coterie_names.join(" | ") : "",
+        llm_ok: Boolean(record.ok),
+        llm_decision: annotation.decision || "",
+        llm_reasoning: annotation.reasoning || "",
+        violated_rubrics: joinRubrics(splitRubrics(annotation.violated_rubrics)),
+        llm_error: record.error || ""
+      };
+    }
+
     function isDisagreement(row) {
       const audit = String(row.audit_label || "").trim().toLowerCase();
       const llm = String(row.llm_decision || "").trim().toLowerCase();
@@ -435,7 +463,7 @@
     function passesFilter(row) {
       const filter = el("filterSelect").value;
       if (filter === "disagreement" && !isDisagreement(row)) return false;
-      if (filter === "missing_human_reasoning" && String(row.human_reasoning || "").trim()) return false;
+      if (filter === "unreviewed" && humanReviews.has(String(row.comment_id || ""))) return false;
       if (filter === "second_pass_ok" && row.second_pass_status !== "ok") return false;
       if (filter === "second_pass_need_review" && row.second_pass_status !== "need_review") return false;
       if (filter === "pass" && row.audit_label !== "pass") return false;
@@ -444,7 +472,7 @@
       const query = el("searchInput").value.trim().toLowerCase();
       if (!query) return true;
       const haystack = [
-        row.sample_id,
+        row.comment_id,
         row.product_name,
         row.topic_titles,
         row.coterie_names,
@@ -459,8 +487,22 @@
     function saveCurrent() {
       const row = currentRow();
       if (!row) return;
-      row.human_reasoning = el("humanReasoning").value;
-      row.review_note = el("reviewNote").value;
+      const reasoning = el("humanReasoning").value.trim();
+      if (!reasoning) {
+        alert("保存人工复核前必须填写 reasoning。");
+        return;
+      }
+      const review = {
+        comment_id: row.comment_id,
+        violated_rubrics: Array.from(
+          document.querySelectorAll(".rubric-check:checked")
+        ).map((input) => input.value),
+        reasoning,
+        review_note: el("reviewNote").value
+      };
+      humanReviews.set(String(row.comment_id || ""), review);
+      row.human_reasoning = review.reasoning;
+      row.review_note = review.review_note;
       row.violated_rubrics = joinRubrics(
         Array.from(document.querySelectorAll(".rubric-check:checked")).map((input) => input.value)
       );
@@ -473,7 +515,6 @@
     }
 
     function updateFilter() {
-      saveCurrent();
       filtered = rows.filter(passesFilter);
       currentFilteredIndex = Math.min(currentFilteredIndex, Math.max(filtered.length - 1, 0));
       updateStats();
@@ -486,7 +527,7 @@
       el("totalCount").textContent = rows.length;
       el("filteredCount").textContent = filtered.length;
       el("disagreementCount").textContent = rows.filter(isDisagreement).length;
-      el("missingReasoningCount").textContent = rows.filter((row) => !String(row.human_reasoning || "").trim()).length;
+      el("reviewedCount").textContent = humanReviews.size;
     }
 
     function renderList() {
@@ -497,13 +538,12 @@
         button.className = `item${index === currentFilteredIndex ? " active" : ""}`;
         button.innerHTML = `
           <div class="item-title">
-            <span>${escapeHtml(row.sample_id || `row-${index + 1}`)}</span>
+            <span>${escapeHtml(row.comment_id || `row-${index + 1}`)}</span>
             <span class="badge ${escapeHtml(row.audit_label || "")}">${escapeHtml(row.audit_label || "-")}</span>
           </div>
           <div class="item-subtitle">${escapeHtml(row.product_name || "")} ${isDisagreement(row) ? " · disagreement" : ""}</div>
         `;
         button.addEventListener("click", () => {
-          saveCurrent();
           currentFilteredIndex = index;
           renderList();
           loadCurrent();
@@ -547,7 +587,7 @@
       el("textView").textContent = row.text || "";
       el("replyView").textContent = row.ai_reply || "";
       el("metaView").textContent = [
-        `sample_id: ${row.sample_id || ""}`,
+        `comment_id: ${row.comment_id || ""}`,
         `product_name: ${row.product_name || ""}`,
         `topic_titles: ${row.topic_titles || ""}`,
         `coterie_names: ${row.coterie_names || ""}`,
@@ -562,9 +602,17 @@
         `second_pass_reasoning: ${row.second_pass_reasoning || ""}`,
         `second_pass_error: ${row.second_pass_error || ""}`
       ].join("\n\n");
-      el("humanReasoning").value = row.human_reasoning || "";
-      el("reviewNote").value = row.review_note || "";
-      renderRubricChecks(splitRubrics(row.violated_rubrics));
+      const human = humanReviews.get(String(row.comment_id || ""));
+      const useSecond = row.second_pass_ok && row.second_pass_status === "ok";
+      const candidateRubrics = useSecond
+        ? row.second_pass_violated_rubrics
+        : row.violated_rubrics;
+      const candidateReasoning = useSecond
+        ? row.second_pass_reasoning
+        : row.llm_reasoning;
+      el("humanReasoning").value = human ? human.reasoning : (candidateReasoning || "");
+      el("reviewNote").value = human ? (human.review_note || "") : "";
+      renderRubricChecks(human ? human.violated_rubrics : splitRubrics(candidateRubrics));
       renderList();
     }
 
@@ -573,16 +621,15 @@
       if (!row) return;
       const rubricsValue = row.second_pass_violated_rubrics || "";
       const reasoning = row.second_pass_reasoning || "";
-      if (rubricsValue) row.violated_rubrics = rubricsValue;
-      if (reasoning) row.human_reasoning = reasoning;
-      loadCurrent();
+      if (reasoning) el("humanReasoning").value = reasoning;
+      renderRubricChecks(splitRubrics(rubricsValue));
     }
 
     function mergeSecondPassResults(results) {
-      const rowsById = new Map(rows.map((row) => [String(row.sample_id || ""), row]));
+      const rowsById = new Map(rows.map((row) => [String(row.comment_id || ""), row]));
       let mergedCount = 0;
       for (const result of results) {
-        const row = rowsById.get(String(result.custom_id || ""));
+        const row = rowsById.get(String(result.comment_id || ""));
         if (!row) continue;
         mergedCount += 1;
         row.second_pass_ok = Boolean(result.ok);
@@ -608,7 +655,6 @@
     }
 
     function exportRows(targetRows, fileName) {
-      saveCurrent();
       const text = targetRows.map((row) => JSON.stringify(row)).join("\n") + "\n";
       const blob = new Blob([text], { type: "application/jsonl;charset=utf-8" });
       const url = URL.createObjectURL(blob);
@@ -634,16 +680,58 @@
       return escapeHtml(value).replaceAll("`", "&#096;");
     }
 
-    el("reviewFile").addEventListener("change", async (event) => {
+    el("annotationFile").addEventListener("change", async (event) => {
       const file = event.target.files[0];
       if (!file) return;
       try {
-        rows = parseJsonl(await file.text());
+        const annotations = parseJsonl(await file.text());
+        rows = annotations.map(annotationToRow);
+        const ids = new Set();
+        for (const row of rows) {
+          if (ids.has(row.comment_id)) throw new Error(`重复 comment_id: ${row.comment_id}`);
+          ids.add(row.comment_id);
+        }
+        humanReviews = new Map();
         filtered = rows.filter(passesFilter);
         currentFilteredIndex = 0;
         updateStats();
         renderList();
         loadCurrent();
+      } catch (error) {
+        alert(error.message);
+      }
+    });
+
+    el("reviewFile").addEventListener("change", async (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
+      if (!rows.length) {
+        alert("请先加载 llm_annotations JSONL。");
+        return;
+      }
+      try {
+        const knownIds = new Set(rows.map((row) => row.comment_id));
+        const reviews = parseJsonl(await file.text());
+        const next = new Map();
+        for (const review of reviews) {
+          const commentId = String(review.comment_id || "");
+          if (!knownIds.has(commentId)) throw new Error(`human_review 中存在未知 comment_id: ${commentId}`);
+          if (next.has(commentId)) throw new Error(`human_review 中存在重复 comment_id: ${commentId}`);
+          if (!String(review.reasoning || "").trim()) throw new Error(`human_review ${commentId} 缺少 reasoning`);
+          next.set(commentId, {
+            comment_id: commentId,
+            violated_rubrics: splitRubrics(review.violated_rubrics),
+            reasoning: String(review.reasoning),
+            review_note: String(review.review_note || "")
+          });
+        }
+        humanReviews = next;
+        for (const row of rows) {
+          const review = humanReviews.get(row.comment_id);
+          row.human_reasoning = review ? review.reasoning : "";
+          row.review_note = review ? review.review_note : "";
+        }
+        updateFilter();
       } catch (error) {
         alert(error.message);
       }
@@ -660,7 +748,7 @@
       const file = event.target.files[0];
       if (!file) return;
       if (!rows.length) {
-        alert("请先加载 human_review JSONL。");
+        alert("请先加载 llm_annotations JSONL。");
         return;
       }
       try {
@@ -673,20 +761,19 @@
     el("filterSelect").addEventListener("change", updateFilter);
     el("searchInput").addEventListener("input", updateFilter);
     el("prevBtn").addEventListener("click", () => {
-      saveCurrent();
       currentFilteredIndex = Math.max(0, currentFilteredIndex - 1);
       loadCurrent();
     });
     el("nextBtn").addEventListener("click", () => {
-      saveCurrent();
       currentFilteredIndex = Math.min(Math.max(filtered.length - 1, 0), currentFilteredIndex + 1);
       loadCurrent();
     });
     el("saveBtn").addEventListener("click", saveCurrent);
     el("applySecondPassBtn").addEventListener("click", applySecondPass);
     el("clearRubricsBtn").addEventListener("click", clearRubrics);
-    el("exportAllBtn").addEventListener("click", () => exportRows(rows, "human_review.calibrated.jsonl"));
-    el("exportFilteredBtn").addEventListener("click", () => exportRows(filtered, "human_review.filtered.calibrated.jsonl"));
+    el("exportAllBtn").addEventListener("click", () => {
+      exportRows(Array.from(humanReviews.values()), "human_review.jsonl");
+    });
 
     updateStats();
   </script>

@@ -31,7 +31,6 @@ LLM_AUTHORIZATION = os.getenv("LLM_AUTHORIZATION", "")
 
 LLM_TEMPERATURE = env_float("LLM_TEMPERATURE", 0.0)
 LLM_TOP_P = env_float("LLM_TOP_P", 1.0)
-LLM_RESPONSE_FORMAT = os.getenv("LLM_RESPONSE_FORMAT", "json_object")
 LLM_SEED = env_optional_int("LLM_SEED")
 LLM_TIMEOUT = env_float("LLM_TIMEOUT", 60.0)
 LLM_RETRIES = env_int("LLM_RETRIES", 2)

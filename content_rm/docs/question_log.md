@@ -45,12 +45,12 @@
 ### 问题：`audit_state` 是否还需要进入生成产物？
 - 回答：不需要。输入数据采集阶段会保证样本都已有运营审核结果，真正用于训练和评测的结论字段是 `audit_label: pass|reject`。
 - 可能缺乏的知识：原始系统状态字段和训练标签字段应该分离，训练产物越少保留无关字段越不容易产生歧义。
-- Decision：`audit_state` 从 `normalized_samples.jsonl`、`human_review.jsonl`、`human_review.csv`、`sft_draft.jsonl` 等所有生成产物中移除。
+- Decision：`audit_state` 不进入任何生成产物，最终审核结论统一使用 `audit_label`。
 
 ### 问题：人工复核文件是否需要 `human_decision`？
 - 回答：不需要。`audit_label` 已经是运营审核结论，再新增 `human_decision` 会形成两个结论字段。人工复核阶段只补充或修正 reasoning，并记录必要备注。
 - 可能缺乏的知识：标注复核可以复核解释链，而不是重新生成业务结论标签。
-- Decision：`human_review` 只保留 `audit_label`、`llm_decision`、`llm_reasoning`、`human_reasoning`、`review_note`、`violated_rubrics` 等字段。
+- Decision（2026-07-13 更新）：`human_review` 是稀疏人工覆盖，只保留 `comment_id`、`violated_rubrics`、`reasoning`、`review_note`。
 
 ### 问题：LLM prompt 是否需要强调不要输出 `review` / `suggested_fix`？
 - 回答：不需要额外负向强调。保留正向 JSON schema 和 `decision: pass|reject` 约束即可，避免提示词冗余。
@@ -60,21 +60,21 @@
 ### 问题：`prepare_dataset.py` 是否应该直接调用公司内 LLM 接口生成预标注？
 - 回答：可以接入，但应做成可选步骤。默认生成人工复核文件；在传入内网接口地址、模型名和 Authorization 时才调用 LLM，避免本机或无内网环境下数据准备失败。后续已决定不再持久化 `llm_annotation_tasks.jsonl`。
 - 可能缺乏的知识：数据准备脚本需要区分“离线产物生成”和“依赖外部服务的标注生成”，这样流程更容易复现和排错。
-- Decision：新增 `--call-llm`、`--llm-base-url`、`--llm-model`、`--llm-authorization` 等参数；请求体只发送必要字段：`model`、`messages`、`max_tokens`、`temperature`、`top_p`、`stream`、`response_format`，以及可选 `seed`。
+- Decision（2026-07-13 更新）：同步与异步调用统一读取 `config.py`/环境变量中的 LLM 配置；请求体不再发送平台未使用的额外格式字段。
 
 ## 2026-06-16 SFT 阶段
 
 ### 问题：在 LLM 标注测试期间，是否可以先写 SFT 代码？
 - 回答：可以先写，但不应直接启动训练。当前最稳的做法是先补“人工复核产物 -> 最终 SFT train/test JSONL”的构建脚本，以及 OpenRLHF 的启动脚本。
 - 可能缺乏的知识：SFT 训练需要的是已定稿的 prompt/target 样本；LLM 预标注文件还不是最终训练集，需要经过人工复核或至少经过字段收敛。
-- Decision：新增 SFT 构建脚本和训练启动脚本；最终 `decision` 使用运营 `audit_label`，`reasoning` 优先用 `human_reasoning`，为空时回退到 `llm_reasoning`。
+- Decision（2026-07-13 更新）：最终 `decision` 使用运营 `audit_label`；监督解释按人工复核、合法二次复核、同意运营标签的一次标注依次选择。
 
 ## 2026-06-17 数据文件收敛
 
 ### 问题：`llm_annotation_tasks.jsonl`、`human_review.csv`、`sft_draft.jsonl` 是否需要由 prepare 阶段保留？
 - 回答：不需要默认保留。LLM task 可以由代码从 sample 和固定 prompt 现场构造；CSV 是 `human_review.jsonl` 的重复视图；`sft_draft` 是训练前草稿，后续应由 SFT 构建阶段直接生成训练样本。
 - 可能缺乏的知识：数据流水线中应区分“长期契约产物”和“可重建中间态”，减少冗余文件会降低理解成本和同步风险。
-- Decision：`prepare_dataset.py` 默认只生成 `human_review.jsonl` 和 `summary.json`；`--call-llm` 时额外生成 `llm_annotations.jsonl`；`normalized_samples.jsonl` 仅在 `--write-normalized` 时作为调试产物输出。
+- Decision（2026-07-13 更新）：`prepare_dataset.py` 不生成全量人工底稿；LLM 模式生成丰富版 `llm_annotations.jsonl`，`--write-normalized` 仅用于输出 `normalized_comments.jsonl` 调试视图。
 
 ### 问题：原始 `parentInfo` 和 `text` 应该如何取舍？
 - 回答：训练和复核阶段只使用清洗后的 `text`。`text` 更完整，`parentInfo` 可能截断；若 `text` 含 HTML，则先清洗。

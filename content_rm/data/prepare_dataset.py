@@ -1,23 +1,34 @@
 #!/usr/bin/env python3
-"""Prepare first-pass business-domain RM data artifacts.
-
-The script keeps the data stage deliberately small:
-raw company JSONL -> optional LLM annotations -> human review JSONL.
-"""
+"""Prepare and annotate company content records for the Content RM workflow."""
 
 from __future__ import annotations
 
 import argparse
 import html
 import json
-import re
 import time
-import urllib.error
-import urllib.request
 from collections import Counter
 from pathlib import Path
 from typing import Any
 
+import requests
+from bs4 import BeautifulSoup
+from pydantic import ValidationError
+
+from async_pipeline import (
+    append_retry_jobs,
+    collect_latest_results,
+    initialize_run,
+    load_manifest,
+    load_tasks,
+    manifest_path,
+    mark_failed_comments,
+    plan_summary,
+    refresh_status,
+    status_summary,
+    submit_run,
+)
+from cmb_async_model import CmbAsyncLLM
 from common import (
     build_llm_url,
     extract_completion_content,
@@ -34,7 +45,6 @@ from config import (
     LLM_AUTHORIZATION,
     LLM_BASE_URL,
     LLM_MODEL,
-    LLM_RESPONSE_FORMAT,
     LLM_RETRIES,
     LLM_RETRY_SLEEP,
     LLM_SEED,
@@ -42,13 +52,18 @@ from config import (
     LLM_TIMEOUT,
     LLM_TOP_P,
 )
+from records import (
+    AnnotationTask,
+    AsyncRequestParams,
+    FirstPassAnnotation,
+    LLMAnnotationRecord,
+    Message,
+    RawComment,
+    ReviewContext,
+    model_rows,
+)
 
-
-LABEL_BY_COMMENT_STATE = {
-    "PUBLISHED": "pass",
-    "HIDE": "reject",
-}
-
+LABEL_BY_COMMENT_STATE = {"PUBLISHED": "pass", "HIDE": "reject"}
 
 SYSTEM_PROMPT = """你是金融内容社区的 AI 回复审核助手。请严格依据给定 rubrics 判断 AI 回复是否可以通过运营审核。
 
@@ -69,205 +84,270 @@ def clean_text(value: Any) -> str:
     raw_text = html.unescape(text_or_empty(value)).strip()
     if not raw_text:
         return ""
-
-    try:
-        from bs4 import BeautifulSoup  # type: ignore
-    except ImportError:
-        # Fallback keeps this script usable in minimal company machines where
-        # bs4 may not be installed yet. It is enough for simple tag removal.
-        without_breaks = re.sub(r"<\s*br\s*/?\s*>", "\n", raw_text, flags=re.IGNORECASE)
-        without_tags = re.sub(r"<[^>]+>", "", without_breaks)
-        return " ".join(html.unescape(without_tags).split())
-
     soup = BeautifulSoup(raw_text, "html.parser")
     return " ".join(soup.get_text(separator=" ", strip=True).split())
 
 
-def compact_named_list(items: Any, key: str) -> list[str]:
-    if not isinstance(items, list):
-        return []
-    values: list[str] = []
-    for item in items:
-        if isinstance(item, dict) and item.get(key):
-            values.append(str(item[key]))
-    return values
+def make_context(raw: RawComment) -> ReviewContext:
+    return ReviewContext(
+        text=clean_text(raw.text),
+        ai_reply=text_or_empty(raw.comment_content),
+        product_name=text_or_empty(raw.product_name),
+        extend_type=text_or_empty(raw.extend_type),
+        comment_state=text_or_empty(raw.comment_state),
+        topic_titles=[text_or_empty(item.title) for item in raw.topic_list if text_or_empty(item.title)],
+        coterie_names=[
+            text_or_empty(item.coterie_name)
+            for item in raw.related_coterie_list
+            if text_or_empty(item.coterie_name)
+        ],
+    )
 
 
-def make_sample(raw: dict[str, Any], index: int) -> dict[str, Any]:
-    comment_state = text_or_empty(raw.get("commentState"))
-    audit_label = LABEL_BY_COMMENT_STATE.get(comment_state, "unknown")
-
-    sample_id = text_or_empty(raw.get("commentId")) or f"sample-{index:06d}"
-    return {
-        "sample_id": sample_id,
-        "source_context": {
-            "text": clean_text(raw.get("text")),
-            "parent_type": text_or_empty(raw.get("parentType")),
-        },
-        "ai_reply": text_or_empty(raw.get("commentContent")),
-        "metadata": {
-            "product_name": text_or_empty(raw.get("productName")),
-            "extend_type": text_or_empty(raw.get("extendType")),
-            "comment_type": text_or_empty(raw.get("commentType")),
-            "comment_state": comment_state,
-            "topic_titles": compact_named_list(raw.get("topicList"), "title"),
-            "coterie_names": compact_named_list(raw.get("relatedCoterieList"), "coterieName"),
-            "create_time": text_or_empty(raw.get("createTime")),
-            "audit_time": text_or_empty(raw.get("auditTime")),
-        },
-        # The audit label is the operator outcome. LLM/human annotations may
-        # later explain or correct it, but this field preserves the source label.
-        "audit_label": audit_label,
-        "annotation": {
-            "violated_rubrics": [],
-            "reasoning": "",
-            "decision": audit_label if audit_label in {"pass", "reject"} else "",
-        },
-    }
-
-
-def user_prompt(sample: dict[str, Any], rubrics: list[dict[str, str]]) -> str:
-    context = sample["source_context"]
-    metadata = sample["metadata"]
+def user_prompt(context: ReviewContext, rubrics: list[dict[str, str]]) -> str:
     return f"""请审核下面这条金融内容社区 AI 回复。
 
 Rubrics:
 {rubrics_text(rubrics)}
 
 业务上下文：
-- 原帖/父评论：{context['text']}
-- 产品名称：{metadata['product_name']}
-- 话题：{", ".join(metadata['topic_titles'])}
-- 圈子：{", ".join(metadata['coterie_names'])}
-- 回复类型：{metadata['extend_type']}
+- 原帖/父评论：{context.text}
+- 产品名称：{context.product_name}
+- 话题：{", ".join(context.topic_titles)}
+- 圈子：{", ".join(context.coterie_names)}
+- 回复类型：{context.extend_type}
 
 待审核 AI 回复：
-{sample['ai_reply']}
+{context.ai_reply}
 """
 
 
-def make_llm_task(sample: dict[str, Any], rubrics: list[dict[str, str]]) -> dict[str, Any]:
-    return {
-        "custom_id": sample["sample_id"],
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt(sample, rubrics)},
-        ],
-        "audit_label": sample["audit_label"],
-    }
+def build_tasks(rows: list[dict[str, Any]], rubrics: list[dict[str, str]]) -> list[AnnotationTask]:
+    tasks: list[AnnotationTask] = []
+    seen: set[str] = set()
+    for line_no, row in enumerate(rows, start=1):
+        try:
+            raw = RawComment.model_validate(row)
+        except ValidationError as exc:
+            raise ValueError(f"raw input line {line_no} is invalid: {exc}") from exc
+        comment_id = str(raw.comment_id)
+        if comment_id in seen:
+            raise ValueError(f"duplicate comment_id in input: {comment_id}")
+        seen.add(comment_id)
+        comment_state = text_or_empty(raw.comment_state)
+        audit_label = LABEL_BY_COMMENT_STATE.get(comment_state)
+        if audit_label is None:
+            raise ValueError(
+                f"comment_id {comment_id} has unsupported commentState {comment_state!r}"
+            )
+        context = make_context(raw)
+        tasks.append(
+            AnnotationTask(
+                comment_id=raw.comment_id,
+                audit_label=audit_label,
+                context=context,
+                messages=[
+                    Message(role="system", content=SYSTEM_PROMPT),
+                    Message(role="user", content=user_prompt(context, rubrics)),
+                ],
+            )
+        )
+    return tasks
 
 
-def normalize_annotation(annotation: dict[str, Any]) -> dict[str, Any]:
-    violated_rubrics = annotation.get("violated_rubrics", [])
-    if not isinstance(violated_rubrics, list):
-        violated_rubrics = []
-
-    decision = text_or_empty(annotation.get("decision")).strip().lower()
-    if decision not in {"pass", "reject"}:
-        raise ValueError(f"annotation decision must be pass or reject, got {decision!r}")
-
-    return {
-        "violated_rubrics": [str(item) for item in violated_rubrics],
-        "reasoning": text_or_empty(annotation.get("reasoning")).strip(),
-        "decision": decision,
-    }
+def validate_annotation(value: dict[str, Any], valid_rubrics: set[str]) -> FirstPassAnnotation:
+    annotation = FirstPassAnnotation.model_validate(value)
+    unknown = [item for item in annotation.violated_rubrics if item not in valid_rubrics]
+    if unknown:
+        raise ValueError(f"unknown rubrics: {unknown}")
+    return annotation
 
 
-def call_llm(task: dict[str, Any]) -> dict[str, Any]:
-    payload = {
+def failed_record(task: AnnotationTask, error: str, raw_content: str | None = None) -> LLMAnnotationRecord:
+    return LLMAnnotationRecord(
+        comment_id=task.comment_id,
+        audit_label=task.audit_label,
+        context=task.context,
+        ok=False,
+        raw_content=raw_content,
+        error=error,
+    )
+
+
+def parse_response_record(
+    task: AnnotationTask,
+    response: dict[str, Any],
+    valid_rubrics: set[str],
+) -> LLMAnnotationRecord:
+    raw_content: str | None = None
+    try:
+        raw_content = extract_completion_content(response)
+        annotation = validate_annotation(extract_json_object(raw_content), valid_rubrics)
+        return LLMAnnotationRecord(
+            comment_id=task.comment_id,
+            audit_label=task.audit_label,
+            context=task.context,
+            ok=True,
+            annotation=annotation,
+            raw_content=raw_content,
+        )
+    except Exception as exc:
+        return failed_record(task, str(exc), raw_content)
+
+
+def sync_payload(task: AnnotationTask) -> dict[str, Any]:
+    payload: dict[str, Any] = {
         "model": LLM_MODEL,
-        "messages": task["messages"],
+        "messages": [message.model_dump() for message in task.messages],
         "max_tokens": FIRST_PASS_LLM_MAX_TOKENS,
         "temperature": LLM_TEMPERATURE,
         "top_p": LLM_TOP_P,
         "stream": False,
-        # The company interface documents response_format as json_object/text.
-        # json_object makes annotation parsing stricter and downstream data clean.
-        "response_format": LLM_RESPONSE_FORMAT,
     }
     if LLM_SEED is not None:
         payload["seed"] = LLM_SEED
+    return payload
 
-    request = urllib.request.Request(
-        build_llm_url(LLM_BASE_URL, LLM_MODEL),
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={
-            "Authorization": LLM_AUTHORIZATION,
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
+
+def call_sync_llm(
+    task: AnnotationTask,
+    valid_rubrics: set[str],
+    session: requests.Session,
+) -> LLMAnnotationRecord:
     last_error: Exception | None = None
+    last_failed_record: LLMAnnotationRecord | None = None
     for attempt in range(1, LLM_RETRIES + 1):
         try:
-            with urllib.request.urlopen(request, timeout=LLM_TIMEOUT) as response:
-                body = response.read().decode("utf-8")
-            response_json = json.loads(body)
-            raw_content = extract_completion_content(response_json)
-            annotation = normalize_annotation(extract_json_object(raw_content))
-            return {
-                "custom_id": task["custom_id"],
-                "audit_label": task["audit_label"],
-                "ok": True,
-                "annotation": annotation,
-                "raw_content": raw_content,
-            }
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
+            response = session.post(
+                build_llm_url(LLM_BASE_URL, LLM_MODEL),
+                json=sync_payload(task),
+                timeout=LLM_TIMEOUT,
+            )
+            response.raise_for_status()
+            body = response.json()
+            if not isinstance(body, dict):
+                raise ValueError("LLM response must be a JSON object")
+            record = parse_response_record(task, body, valid_rubrics)
+            if not record.ok:
+                last_failed_record = record
+                raise ValueError(record.error)
+            return record
+        except (requests.RequestException, ValueError) as exc:
             last_error = exc
             if attempt < LLM_RETRIES:
                 time.sleep(LLM_RETRY_SLEEP)
+    return last_failed_record or failed_record(task, str(last_error))
 
-    return {
-        "custom_id": task["custom_id"],
-        "audit_label": task["audit_label"],
-        "ok": False,
-        "annotation": None,
-        "error": str(last_error),
+
+def run_sync_annotations(
+    tasks: list[AnnotationTask], valid_rubrics: set[str]
+) -> list[LLMAnnotationRecord]:
+    session = requests.Session()
+    session.headers.update(
+        {"Authorization": LLM_AUTHORIZATION, "Content-Type": "application/json"}
+    )
+    try:
+        results: list[LLMAnnotationRecord] = []
+        for index, task in enumerate(tasks, start=1):
+            print(f"Annotating {index}/{len(tasks)}: {task.comment_id}")
+            results.append(call_sync_llm(task, valid_rubrics, session))
+        return results
+    finally:
+        session.close()
+
+
+def make_async_client() -> CmbAsyncLLM:
+    return CmbAsyncLLM(
+        host=LLM_BASE_URL,
+        authorization=LLM_AUTHORIZATION,
+        model=LLM_MODEL,
+        timeout=LLM_TIMEOUT,
+        retries=LLM_RETRIES,
+        retry_sleep=LLM_RETRY_SLEEP,
+    )
+
+
+def request_params() -> AsyncRequestParams:
+    return AsyncRequestParams(
+        temperature=LLM_TEMPERATURE,
+        max_tokens=FIRST_PASS_LLM_MAX_TOKENS,
+        top_p=LLM_TOP_P,
+        seed=LLM_SEED,
+    )
+
+
+def write_annotation_outputs(
+    output_dir: Path,
+    tasks: list[AnnotationTask],
+    records: list[LLMAnnotationRecord],
+) -> dict[str, Any]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    annotations_path = output_dir / "llm_annotations.jsonl"
+    summary_path = output_dir / "summary.json"
+    write_jsonl(annotations_path, model_rows(records))
+    summary = {
+        "total": len(tasks),
+        "audit_label_counts": dict(Counter(task.audit_label for task in tasks)),
+        "comment_state_counts": dict(Counter(task.context.comment_state for task in tasks)),
+        "extend_type_counts": dict(Counter(task.context.extend_type for task in tasks)),
+        "llm_annotation_counts": dict(Counter("ok" if item.ok else "failed" for item in records)),
+        "outputs": {"llm_annotations": str(annotations_path)},
     }
+    write_json(summary_path, summary)
+    return summary
 
 
-def run_llm_annotations(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    if not LLM_AUTHORIZATION:
-        raise ValueError("LLM authorization is required. Set LLM_AUTHORIZATION in content_rm/data/config.py or the environment.")
+def collect_async_annotations(
+    client: CmbAsyncLLM,
+    run_dir: Path,
+    output_dir: Path,
+    valid_rubrics: set[str],
+) -> dict[str, Any]:
+    manifest = load_manifest(run_dir)
+    tasks = load_tasks(manifest)
+    collected = collect_latest_results(client, run_dir)
+    records: list[LLMAnnotationRecord] = []
+    failed_ids: list[str] = []
+    for task in tasks:
+        comment_id = str(task.comment_id)
+        if comment_id in collected.errors:
+            record = failed_record(task, collected.errors[comment_id])
+        else:
+            item = collected.items.get(comment_id)
+            record = (
+                parse_response_record(task, item.response or {}, valid_rubrics)
+                if item is not None
+                else failed_record(task, "collected result is missing")
+            )
+        records.append(record)
+        if not record.ok:
+            failed_ids.append(comment_id)
+    mark_failed_comments(run_dir, failed_ids)
+    return write_annotation_outputs(output_dir, tasks, records)
 
-    results: list[dict[str, Any]] = []
-    for index, task in enumerate(tasks, start=1):
-        print(f"Annotating {index}/{len(tasks)}: {task['custom_id']}")
-        results.append(call_llm(task))
-    return results
-
-
-def make_human_review_row(sample: dict[str, Any], llm_annotation: dict[str, Any] | None = None) -> dict[str, Any]:
-    metadata = sample["metadata"]
-    context = sample["source_context"]
-    annotation = llm_annotation or {}
-    return {
-        "sample_id": sample["sample_id"],
-        "audit_label": sample["audit_label"],
-        "llm_decision": text_or_empty(annotation.get("decision")),
-        "llm_reasoning": text_or_empty(annotation.get("reasoning")),
-        "human_reasoning": "",
-        "review_note": "",
-        "violated_rubrics": " | ".join(annotation.get("violated_rubrics", [])),
-        "extend_type": metadata["extend_type"],
-        "comment_state": metadata["comment_state"],
-        "product_name": metadata["product_name"],
-        "topic_titles": " | ".join(metadata["topic_titles"]),
-        "coterie_names": " | ".join(metadata["coterie_names"]),
-        "text": context["text"],
-        "ai_reply": sample["ai_reply"],
-    }
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Prepare domain content RM data artifacts.")
+    parser = argparse.ArgumentParser(description="Prepare and annotate Content RM data.")
     parser.add_argument("--input", type=Path, required=True, help="Raw company comment JSONL.")
     parser.add_argument("--rubrics", type=Path, required=True, help="Rubrics markdown file.")
-    parser.add_argument("--output-dir", type=Path, required=True, help="Directory for generated artifacts.")
-    parser.add_argument("--write-normalized", action="store_true", help="Write normalized_samples.jsonl for debugging.")
-    parser.add_argument("--call-llm", action="store_true", help="Call company-internal LLM and fill annotations.")
+    parser.add_argument("--output-dir", type=Path, required=True, help="Generated artifact directory.")
+    parser.add_argument("--write-normalized", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--call-llm", action="store_true", help="Run synchronous first-pass annotation.")
+    mode.add_argument(
+        "--async-action",
+        choices=["plan", "submit", "status", "collect", "retry-failed"],
+    )
+    parser.add_argument("--run-dir", type=Path, help="Async run directory.")
+    parser.add_argument("--batch-size", type=int, default=500)
     args = parser.parse_args()
-    if args.call_llm and (not LLM_BASE_URL or not LLM_MODEL):
-        parser.error("--call-llm requires LLM_BASE_URL and LLM_MODEL in content_rm/data/config.py.")
+    needs_llm_config = args.call_llm or (
+        args.async_action is not None and args.async_action != "plan"
+    )
+    if needs_llm_config and not (
+        LLM_BASE_URL and LLM_MODEL and LLM_AUTHORIZATION
+    ):
+        parser.error("LLM_BASE_URL, LLM_MODEL, and LLM_AUTHORIZATION are required")
     return args
 
 
@@ -275,44 +355,80 @@ def main() -> None:
     args = parse_args()
     rows = read_jsonl(args.input)
     rubrics = read_rubrics(args.rubrics)
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-
-    samples = [make_sample(raw, index) for index, raw in enumerate(rows, start=1)]
-    llm_tasks = [make_llm_task(sample, rubrics) for sample in samples]
-    llm_results = run_llm_annotations(llm_tasks) if args.call_llm else []
-    llm_annotations_by_id = {
-        item["custom_id"]: item["annotation"]
-        for item in llm_results
-        if item.get("ok") and isinstance(item.get("annotation"), dict)
-    }
-    review_rows = [make_human_review_row(sample, llm_annotations_by_id.get(sample["sample_id"])) for sample in samples]
-
-    paths = {
-        "human_review_jsonl": args.output_dir / "human_review.jsonl",
-        "summary": args.output_dir / "summary.json",
-    }
-    if args.write_normalized:
-        paths["normalized_samples"] = args.output_dir / "normalized_samples.jsonl"
-    if args.call_llm:
-        paths["llm_annotations"] = args.output_dir / "llm_annotations.jsonl"
+    valid_rubrics = {item["name"] for item in rubrics}
+    tasks = build_tasks(rows, rubrics)
+    run_dir = args.run_dir or args.output_dir / "async" / "first_pass"
+    output_path = args.output_dir / "llm_annotations.jsonl"
 
     if args.write_normalized:
-        write_jsonl(paths["normalized_samples"], samples)
-    if args.call_llm:
-        write_jsonl(paths["llm_annotations"], llm_results)
-    write_jsonl(paths["human_review_jsonl"], review_rows)
+        write_jsonl(
+            args.output_dir / "normalized_comments.jsonl",
+            [
+                {
+                    "comment_id": str(task.comment_id),
+                    "audit_label": task.audit_label,
+                    "context": task.context.model_dump(mode="json"),
+                }
+                for task in tasks
+            ],
+        )
 
-    summary = {
-        "input": str(args.input),
-        "rubrics": str(args.rubrics),
-        "total": len(samples),
-        "audit_label_counts": dict(Counter(sample["audit_label"] for sample in samples)),
-        "comment_state_counts": dict(Counter(sample["metadata"]["comment_state"] for sample in samples)),
-        "extend_type_counts": dict(Counter(sample["metadata"]["extend_type"] for sample in samples)),
-        "llm_annotation_counts": dict(Counter("ok" if item.get("ok") else "failed" for item in llm_results)),
-        "outputs": {name: str(path) for name, path in paths.items() if name != "summary"},
-    }
-    write_json(paths["summary"], summary)
+    if args.async_action == "plan":
+        print(json.dumps(plan_summary(tasks, args.batch_size), ensure_ascii=False, indent=2))
+        return
+
+    if args.async_action:
+        if args.async_action == "submit":
+            initialize_run(
+                run_dir=run_dir,
+                stage="first_pass",
+                tasks=tasks,
+                input_path=args.input,
+                rubrics_path=args.rubrics,
+                output_path=output_path,
+                model=LLM_MODEL,
+                batch_size=args.batch_size,
+                params=request_params(),
+            )
+        else:
+            if not manifest_path(run_dir).exists():
+                raise ValueError(f"async run does not exist: {run_dir}")
+            initialize_run(
+                run_dir=run_dir,
+                stage="first_pass",
+                tasks=tasks,
+                input_path=args.input,
+                rubrics_path=args.rubrics,
+                output_path=output_path,
+                model=LLM_MODEL,
+                batch_size=args.batch_size,
+                params=request_params(),
+            )
+
+        with make_async_client() as client:
+            if args.async_action == "submit":
+                result = submit_run(client, run_dir)
+            elif args.async_action == "status":
+                result = status_summary(refresh_status(client, run_dir))
+            elif args.async_action == "collect":
+                result = collect_async_annotations(client, run_dir, args.output_dir, valid_rubrics)
+            else:
+                append_retry_jobs(run_dir)
+                result = submit_run(client, run_dir)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+
+    if args.call_llm:
+        records = run_sync_annotations(tasks, valid_rubrics)
+        summary = write_annotation_outputs(args.output_dir, tasks, records)
+    else:
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        summary = {
+            "total": len(tasks),
+            "audit_label_counts": dict(Counter(task.audit_label for task in tasks)),
+            "outputs": {},
+        }
+        write_json(args.output_dir / "summary.json", summary)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 

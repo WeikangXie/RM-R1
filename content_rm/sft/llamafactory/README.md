@@ -9,10 +9,11 @@ It is independent from the OpenRLHF launcher in `content_rm/sft/openrlhf/`. The 
 From the RM-R1 repository root:
 
 ```bash
-python3 content_rm/data/build_sft_dataset.py \
+uv run python content_rm/data/build_sft_dataset.py \
+  --llm-annotations content_rm/data/local/review/llm_annotations.jsonl \
+  --second-pass-annotations content_rm/data/local/review/second_pass_annotations.jsonl \
   --human-review content_rm/data/local/review/human_review.jsonl \
   --rubrics content_rm/data/rubrics.md \
-  --llm-annotations content_rm/data/local/review/llm_annotations.jsonl \
   --output-dir content_rm/data/local/sft \
   --write-llamafactory-alpaca
 ```

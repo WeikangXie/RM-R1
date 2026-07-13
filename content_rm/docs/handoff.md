@@ -1,6 +1,6 @@
 # Content RM Handoff
 
-更新时间：2026-07-07
+更新时间：2026-07-13
 
 ## 当前状态
 
@@ -23,10 +23,11 @@
   - `commentState=PUBLISHED` -> `audit_label=pass`
   - `commentState=HIDE` -> `audit_label=reject`
   - `audit_label` 是训练和评估中的最终业务标签。
-- 已实现 raw -> human review 的数据准备流程。
-- 已实现可选公司内 LLM 一轮标注，LLM 调用参数集中在 `content_rm/data/config.py`。
-- 已实现针对 `llm_decision != audit_label` 样本的二次复核流程。
-- 已实现轻量人工校准页面，用于修正 `violated_rubrics`、`human_reasoning`、`review_note`。
+- `comment_id` 是全链路唯一业务主键，直接作为异步平台 `custom_id`。
+- 已实现同步和可恢复异步的一轮标注；异步流程支持 `plan/submit/status/collect/retry-failed`。
+- `llm_annotations.jsonl` 是包含审核上下文的一次标注主数据。
+- 已实现直接基于一次标注分歧样本的同步/异步二次复核。
+- 已实现轻量人工校准页面，只导出人工实际保存过的稀疏 `human_review.jsonl`。
 - 已约定 `review_note` 只作为内部备注，不进入 SFT target。
 
 ### SFT 阶段
@@ -42,7 +43,8 @@
 ```
 
 - `decision` 始终使用运营 `audit_label`。
-- `reasoning` 优先使用人工校准后的 `human_reasoning`，缺失时可回退到 LLM reasoning。
+- 标注优先级是人工复核 > 合法二次复核 > 与运营标签一致的一次标注。
+- 一次标注失败或分歧未解决且无人复核的样本不进入训练。
 - `build_sft_dataset.py` 已支持三种输出：
   - OpenRLHF：`content_rm/data/local/sft/openrlhf/train.jsonl`、`test.jsonl`
   - LLaMA-Factory Alpaca：`content_rm/data/local/sft/llamafactory_alpaca/train.json`、`test.json`
@@ -67,7 +69,7 @@
 - `violated_rubrics`、`reasoning`、`decision` 必须三元组一致：
   - `decision=reject` 时通常需要非空违规规则和拒绝理由。
   - `decision=pass` 时通常不应保留违规命中。
-- 当前仓库没有已提交的自动合并 `second_pass_annotations` 到 `human_review` 的 CLI；若下一阶段需要自动合并，应先补脚本并记录命令。
+- `human_review.jsonl` 只包含 `comment_id`、`violated_rubrics`、`reasoning`、`review_note`；没有对应行时按模型标注优先级回退。
 
 ## 下一阶段：SFT Eval
 
@@ -93,7 +95,7 @@
 
 ```json
 {
-  "sample_id": "样本 ID",
+  "comment_id": "评论 UUID",
   "model": "模型版本名",
   "response": "模型原始输出文本"
 }
@@ -119,4 +121,3 @@
 3. 新增 `score_predictions.py`，消费预测 JSONL 并输出 metrics/report。
 4. 先用 5-10 条手写预测样本做 smoke test。
 5. 再用两版 SFT 模型分别导出预测并比较，优先关注 false pass 和 reject recall。
-

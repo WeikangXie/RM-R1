@@ -23,8 +23,11 @@ Current local layout:
 
 ```text
 content_rm/data/local/raw/comment_data.jsonl
+content_rm/data/local/review/llm_annotations.jsonl
+content_rm/data/local/review/second_pass_annotations.jsonl
 content_rm/data/local/review/human_review.jsonl
 content_rm/data/local/review/summary.json
+content_rm/data/local/review/async/
 content_rm/data/local/sft/
 content_rm/data/local/checkpoints/
 ```
@@ -43,92 +46,100 @@ content_rm/data/local/checkpoints/
 
 The input JSONL is expected to contain only items that already have operator audit results. Generated artifacts do not include `auditState`; the only training/evaluation label is `audit_label`.
 
-## Generate Data Artifacts
+## Environment
 
-From the RM-R1 repository root:
+The lightweight Content RM tools are managed by the root uv project. This environment is independent from the nested OpenRLHF training project.
 
 ```bash
-python3 content_rm/data/prepare_dataset.py \
-  --input content_rm/data/local/raw/comment_data.jsonl \
-  --rubrics content_rm/data/rubrics.md \
-  --output-dir content_rm/data/local/review
+uv sync --dev
+uv run pytest
 ```
 
-Generated files:
+## First-Pass Annotation
 
-- `human_review.jsonl`: review sheet in JSONL form. Human reviewers fill reasoning and notes, not a second decision label.
-- `summary.json`: counts and output paths for quick checks.
+Every generated business record is keyed by `comment_id`. The raw company field `commentId` must be a UUID and unique within the input file; the same value is sent to the asynchronous platform as `custom_id`.
 
-Review fields:
-
-- `human_reasoning`: final reviewer-calibrated explanation used by SFT data building when present.
-- `violated_rubrics`: final reviewer-calibrated rubric names, separated with ` | ` when multiple rubrics are selected.
-- `review_note`: internal reviewer note for uncertainty, label conflicts, follow-up checks, or why a row should stay out of training. It is not used as an SFT target by default.
-
-Optional debug artifact:
-
-- `normalized_samples.jsonl`: write it with `--write-normalized` when you need to inspect field cleanup.
-
-No `llm_annotation_tasks.jsonl`, `human_review.csv`, or `sft_draft.jsonl` is written by default. LLM tasks are built in memory when `--call-llm` is used.
-
-## Call Company LLM
-
-The script can optionally call the company-internal chat completion endpoint. Configure LLM call parameters in `content_rm/data/config.py`. Keep long-lived tokens out of git; prefer `LLM_AUTHORIZATION` in the environment.
+Validate the input and estimate asynchronous batches without calling the platform:
 
 ```bash
-python3 content_rm/data/prepare_dataset.py \
+uv run python content_rm/data/prepare_dataset.py \
+  --input content_rm/data/local/raw/comment_data.jsonl \
+  --rubrics content_rm/data/rubrics.md \
+  --output-dir content_rm/data/local/review \
+  --async-action plan
+```
+
+For the synchronous endpoint, use `--call-llm`. It writes the enriched `llm_annotations.jsonl`, which contains the normalized review context and the model result; it does not create a full `human_review.jsonl`.
+
+```bash
+uv run python content_rm/data/prepare_dataset.py \
   --input content_rm/data/local/raw/comment_data.jsonl \
   --rubrics content_rm/data/rubrics.md \
   --output-dir content_rm/data/local/review \
   --call-llm
 ```
 
-The endpoint path is built as:
+For thousands of rows, use the recoverable asynchronous flow. The default batch size is 500:
 
-```text
-{llm_base_url}/llm/{llm_model}/v1/chat/completions
+```bash
+uv run python content_rm/data/prepare_dataset.py \
+  --input content_rm/data/local/raw/comment_data.jsonl \
+  --rubrics content_rm/data/rubrics.md \
+  --output-dir content_rm/data/local/review \
+  --async-action submit
+
+# Re-run the same command arguments with one of these actions:
+# --async-action status
+# --async-action collect
+# --async-action retry-failed
 ```
 
-Only the necessary request fields are sent: `model`, `messages`, `max_tokens`, `temperature`, `top_p`, `stream`, `response_format`, and optional `seed`. `response_format` defaults to `json_object`, matching the company interface definition.
+The run manifest, task snapshot, task IDs, attempts, and raw result pages are stored under `content_rm/data/local/review/async/first_pass/`. Credentials are never stored there. Both synchronous and asynchronous modes reuse `LLM_BASE_URL`, `LLM_MODEL`, and `LLM_AUTHORIZATION` from `content_rm/data/config.py` or the environment.
 
-When `--call-llm` is enabled, the script also writes `llm_annotations.jsonl` and pre-fills `llm_decision`, `llm_reasoning`, and `violated_rubrics` in the human review file.
+`--write-normalized` optionally writes `normalized_comments.jsonl` for debugging. With no LLM mode selected, the script only validates/counts the input and writes `summary.json`.
 
 ## Second-Pass Review For Disagreements
 
-When first-pass `llm_decision` disagrees with the operator `audit_label`, run a label-conditioned second pass. The second pass does not decide the final label; it tries to explain the fixed operator label using rubrics, or marks the row as `need_review`.
+The second pass reads `llm_annotations.jsonl` directly and selects successful rows where the first-pass `decision` differs from `audit_label`.
 
 Dry-run the disagreement selection first:
 
 ```bash
-python3 content_rm/data/second_pass_review.py \
-  --human-review content_rm/data/local/review/human_review.jsonl \
+uv run python content_rm/data/second_pass_review.py \
+  --llm-annotations content_rm/data/local/review/llm_annotations.jsonl \
   --rubrics content_rm/data/rubrics.md \
   --output content_rm/data/local/review/second_pass_annotations.jsonl \
   --dry-run
 ```
 
-Call the company-internal LLM for selected disagreements:
+Submit the selected rows asynchronously, then use `status`, `collect`, and `retry-failed` with the same arguments:
 
 ```bash
-python3 content_rm/data/second_pass_review.py \
-  --human-review content_rm/data/local/review/human_review.jsonl \
+uv run python content_rm/data/second_pass_review.py \
+  --llm-annotations content_rm/data/local/review/llm_annotations.jsonl \
   --rubrics content_rm/data/rubrics.md \
-  --output content_rm/data/local/review/second_pass_annotations.jsonl
+  --output content_rm/data/local/review/second_pass_annotations.jsonl \
+  --async-action submit
 ```
 
-The script writes `second_pass_annotations.jsonl` and `second_pass_summary.json` in the output directory. It does not overwrite `human_review.jsonl`.
+Without `--async-action` or `--dry-run`, the script retains the synchronous call mode.
 
-For manual calibration, open `content_rm/data/review_calibration.html` in a browser, load `human_review.jsonl`, optionally load `rubrics.md` and `second_pass_annotations.jsonl`, edit `violated_rubrics`, `human_reasoning`, and `review_note`, then export a calibrated JSONL. Final SFT data uses `audit_label`, `violated_rubrics`, and `human_reasoning`; `review_note` remains an internal note.
+## Sparse Human Review
+
+Open `content_rm/data/review_calibration.html` and load `llm_annotations.jsonl`. Optionally load `second_pass_annotations.jsonl`, an existing sparse `human_review.jsonl`, and `rubrics.md`. A row is added to the exported human review only after clicking **保存当前**.
+
+Each sparse human row contains only `comment_id`, `violated_rubrics`, `reasoning`, and `review_note`. To remove an override, delete that `comment_id` row from `human_review.jsonl`.
 
 ## Build Reviewed SFT Data
 
-After LLM annotation and human review, build the OpenRLHF-ready train/test files:
+`llm_annotations.jsonl` is required; second-pass and sparse human annotations are optional:
 
 ```bash
-python3 content_rm/data/build_sft_dataset.py \
+uv run python content_rm/data/build_sft_dataset.py \
+  --llm-annotations content_rm/data/local/review/llm_annotations.jsonl \
+  --second-pass-annotations content_rm/data/local/review/second_pass_annotations.jsonl \
   --human-review content_rm/data/local/review/human_review.jsonl \
   --rubrics content_rm/data/rubrics.md \
-  --llm-annotations content_rm/data/local/review/llm_annotations.jsonl \
   --output-dir content_rm/data/local/sft
 ```
 
@@ -140,19 +151,21 @@ The OpenRLHF SFT files are:
 
 Each training row uses:
 
+- `comment_id`: the company comment UUID.
 - `context_messages`: model input messages.
 - `response`: JSON string containing `violated_rubrics`, `reasoning`, and `decision`.
 - `audit_label`: the operator pass/reject label.
 
-The final `decision` always uses `audit_label`. LLM output is used as a reasoning candidate only.
+Annotation precedence is sparse human review, successful `status=ok` second pass for disagreements, then an agreeing first pass. Unresolved disagreements and failed annotations without a human override are skipped. The final `decision` always uses `audit_label`.
 
 To build LLaMA-Factory Alpaca SFT files instead, pass `--write-llamafactory-alpaca`:
 
 ```bash
-python3 content_rm/data/build_sft_dataset.py \
+uv run python content_rm/data/build_sft_dataset.py \
+  --llm-annotations content_rm/data/local/review/llm_annotations.jsonl \
+  --second-pass-annotations content_rm/data/local/review/second_pass_annotations.jsonl \
   --human-review content_rm/data/local/review/human_review.jsonl \
   --rubrics content_rm/data/rubrics.md \
-  --llm-annotations content_rm/data/local/review/llm_annotations.jsonl \
   --output-dir content_rm/data/local/sft \
   --write-llamafactory-alpaca
 ```
@@ -167,10 +180,11 @@ The LLaMA-Factory files are:
 To build the post-train platform single-turn JSONL file instead, pass `--write-post-train-platform`:
 
 ```bash
-python3 content_rm/data/build_sft_dataset.py \
+uv run python content_rm/data/build_sft_dataset.py \
+  --llm-annotations content_rm/data/local/review/llm_annotations.jsonl \
+  --second-pass-annotations content_rm/data/local/review/second_pass_annotations.jsonl \
   --human-review content_rm/data/local/review/human_review.jsonl \
   --rubrics content_rm/data/rubrics.md \
-  --llm-annotations content_rm/data/local/review/llm_annotations.jsonl \
   --output-dir content_rm/data/local/sft \
   --write-post-train-platform
 ```
