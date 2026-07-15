@@ -110,6 +110,11 @@ The run manifest, task snapshot, task IDs, attempts, and raw result pages are st
 
 The second pass reads `llm_annotations.jsonl` directly and selects successful rows where the first-pass `decision` differs from `audit_label`.
 
+The operational label is presented as a candidate rather than a forced answer. The
+reviewer emits its independent `decision`; label mismatches or inconsistent
+decision/rubric combinations are normalized to `status=need_review` and are not
+treated as retryable platform failures or admitted into SFT data.
+
 Dry-run the disagreement selection first:
 
 ```bash

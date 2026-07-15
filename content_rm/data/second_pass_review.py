@@ -58,47 +58,51 @@ from data.records import (
     Message,
     SecondPassAnnotation,
     SecondPassRecord,
+    decision_rubrics_are_consistent,
 )
 from data.rubric_utils import canonicalize_rubric_names, read_rubrics, rubrics_text
 
-SYSTEM_PROMPT = """你是金融内容社区的 AI 回复审核复核助手。
+SYSTEM_PROMPT = """你是金融内容社区的 AI 回复审核员。你的输出将直接作为一条独立审核结论使用。
 
-运营最终审核结果已经给定。你的任务不是重新决定 pass/reject，而是严格依据 rubrics 判断该运营结果是否能被合理解释。
+你会收到一个待验证的候选 decision。请严格依据待审核回复中的具体内容和给定 rubrics 独立审核。候选 decision 只用于比较，不是必须服从的答案。
 
 输出必须是 JSON，不要输出 JSON 之外的文字。JSON 字段固定为：
 {
   "status": "ok 或 need_review",
   "violated_rubrics": ["命中的规则名称；如果没有则为空数组"],
-  "reasoning": "引用具体内容依据，解释为什么给定运营结果成立；如果无法合理解释，说明为什么需要人工复核",
-  "decision": "pass 或 reject，必须等于给定运营结果"
+  "reasoning": "可独立使用的审核判断，必须引用或明确指出待审核回复中的具体内容",
+  "decision": "你依据回复内容独立得出的 pass 或 reject"
 }
 
 要求：
-1. decision 必须等于给定运营结果。
-2. 如果给定运营结果能被 rubrics 合理解释，status 输出 ok。
-3. 如果无法合理解释，status 输出 need_review，不要强行编造理由。
-4. decision=pass 时 violated_rubrics 通常应为空数组。
-5. decision=reject 时 violated_rubrics 应尽量给出命中的规则。
+1. decision 必须反映你的真实审核判断，不得为了等于候选 decision 而改写。
+2. 你的 decision 等于候选 decision，且有明确、具体的文本证据时，status=ok；decision 不等于候选 decision，或者证据不足、需要猜测时，status=need_review。
+3. decision=reject 时，必须指出具体风险表述，并给出至少一个规范的 rubric 名称。
+4. decision=pass 时，应说明回复实际表达了什么以及为何未触发风险，violated_rubrics 必须为空数组。
+5. reasoning、violated_rubrics 和 decision 必须表达同一个审核结论。
+6. reasoning 必须像直接审核该回复得出的结论，不得提及“运营”“候选结论”“给定标签”“第一次标注”“二次复核”“rubrics”或“该结果合理”等审核流程信息。
+7. 不要使用“根据规则和上下文可以判断”之类的空泛开头。
+
+审核交易引导时，不要只检查“上车、抄底、加仓”等词。明确建议用户购买、赎回、转换、更换产品或份额，例如“优先考虑”“强烈推荐”“建议尽快切换”，也应按交易引导风险判断，不能因为回复同时包含费用或产品分析就忽略。
+
+reasoning 示例：
+- 合格 reject：回复使用“后续肯定会上涨”描述未来表现，将不确定收益表述为确定结果，构成收益暗示，因此不通过。
+- 合格 reject：回复使用“建议尽快切换至另一份额”直接引导用户转换基金份额，构成交易诱导，因此不通过。
+- 合格 pass：回复仅说明历史表现并提示市场风险，没有承诺未来收益、诱导交易或提供个性化投资建议，可以通过。
+- 合格 need_review：候选 decision 为 reject，但独立审核结论为 pass 时，输出 status=need_review、decision=pass、空 violated_rubrics，并用 reasoning 直接说明可以通过的内容依据。
+- 不合格：根据 rubrics 和上下文，可以判断运营的 reject 是合理的。
 """
 
 
 def user_prompt(record: LLMAnnotationRecord, rubrics: list[dict[str, str]]) -> str:
-    if record.annotation is None:
-        raise ValueError("second-pass prompt requires a successful first-pass annotation")
     context = record.context
-    annotation = record.annotation
-    return f"""请对下面这条金融内容社区 AI 回复做二次复核推理。
+    return f"""请审核下面这条金融内容社区 AI 回复，并验证候选 decision 是否有充分的文本依据。
 
 Rubrics:
 {rubrics_text(rubrics)}
 
-运营最终审核结果：
+待验证的候选 decision：
 {record.audit_label}
-
-第一次 LLM 审核结果：
-- decision: {annotation.decision}
-- violated_rubrics: {" | ".join(annotation.violated_rubrics)}
-- reasoning: {annotation.reasoning}
 
 业务上下文：
 - 原帖/父评论：{context.text}
@@ -110,7 +114,7 @@ Rubrics:
 待审核 AI 回复：
 {context.ai_reply}
 
-请判断运营最终审核结果是否能被 rubrics 合理解释。能解释则 status=ok；不能解释则 status=need_review。
+请先独立得出真实 decision，再与候选 decision 比较。两者一致且证据充分时输出 status=ok；两者不一致或证据不足时输出 status=need_review。不要为了匹配候选 decision 改写判断。
 """
 
 
@@ -134,6 +138,8 @@ def build_tasks(
             continue
         if record.annotation.decision == record.audit_label:
             continue
+        # The first-pass result is only used to select disagreements. Excluding
+        # it from messages avoids anchoring and process-style SFT reasoning.
         tasks.append(
             AnnotationTask(
                 comment_id=record.comment_id,
@@ -150,18 +156,23 @@ def build_tasks(
 
 
 def validate_annotation(
-    value: dict[str, Any], expected_decision: str, valid_rubrics: set[str]
+    value: dict[str, Any], audit_label: str, valid_rubrics: set[str]
 ) -> SecondPassAnnotation:
     annotation = SecondPassAnnotation.model_validate(value)
-    if annotation.decision != expected_decision:
-        raise ValueError(
-            f"decision must equal audit_label {expected_decision!r}, got {annotation.decision!r}"
-        )
+    canonical_rubrics = canonicalize_rubric_names(
+        annotation.violated_rubrics, valid_rubrics
+    )
+    status = annotation.status
+    # A label disagreement or inconsistent supervision is a business review
+    # outcome, not a transport/parser failure, so retain it as need_review.
+    if annotation.decision != audit_label or not decision_rubrics_are_consistent(
+        annotation.decision, canonical_rubrics
+    ):
+        status = "need_review"
     return annotation.model_copy(
         update={
-            "violated_rubrics": canonicalize_rubric_names(
-                annotation.violated_rubrics, valid_rubrics
-            )
+            "status": status,
+            "violated_rubrics": canonical_rubrics,
         }
     )
 

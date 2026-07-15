@@ -22,6 +22,7 @@ from data.records import (
     HumanReviewRecord,
     LLMAnnotationRecord,
     SecondPassRecord,
+    decision_rubrics_are_consistent,
 )
 from data.rubric_utils import read_rubrics, rubrics_text
 
@@ -94,6 +95,12 @@ def choose_annotation(
     comment_id = str(first.comment_id)
     if human is not None:
         validate_rubrics(human.violated_rubrics, valid_rubrics, f"human_review {comment_id}")
+        if not decision_rubrics_are_consistent(
+            first.audit_label, human.violated_rubrics
+        ):
+            raise ValueError(
+                f"human_review {comment_id} has inconsistent decision and rubrics"
+            )
         return FirstPassAnnotation(
             violated_rubrics=human.violated_rubrics,
             reasoning=human.reasoning,
@@ -107,6 +114,12 @@ def choose_annotation(
         first.annotation.violated_rubrics, valid_rubrics, f"llm_annotations {comment_id}"
     )
     if first.annotation.decision == first.audit_label:
+        # Model-generated supervision that contradicts its own decision is
+        # counted and skipped instead of silently entering the SFT dataset.
+        if not decision_rubrics_are_consistent(
+            first.annotation.decision, first.annotation.violated_rubrics
+        ):
+            return None, "first_pass_inconsistent_decision_rubrics"
         return first.annotation, "first_pass"
 
     if second is None:
@@ -121,8 +134,13 @@ def choose_annotation(
     if second.annotation.status != "ok":
         return None, "unresolved_disagreement_need_review"
     if second.annotation.decision != first.audit_label:
-        raise ValueError(
-            f"second-pass decision for {comment_id} does not equal audit_label"
+        return None, "unresolved_disagreement_second_pass_decision_mismatch"
+    if not decision_rubrics_are_consistent(
+        second.annotation.decision, second.annotation.violated_rubrics
+    ):
+        return (
+            None,
+            "unresolved_disagreement_second_pass_inconsistent_decision_rubrics",
         )
     return FirstPassAnnotation(
         violated_rubrics=second.annotation.violated_rubrics,

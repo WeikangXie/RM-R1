@@ -13,6 +13,14 @@ Label = Literal["pass", "reject"]
 ReviewStatus = Literal["ok", "need_review"]
 
 
+def decision_rubrics_are_consistent(
+    decision: Label, violated_rubrics: list[str]
+) -> bool:
+    """Require reject supervision to name a rule and pass supervision to name none."""
+
+    return bool(violated_rubrics) == (decision == "reject")
+
+
 class RawTopic(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
