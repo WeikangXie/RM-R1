@@ -97,6 +97,11 @@ uv --project content_rm run python content_rm/data/prepare_dataset.py \
 # --async-action retry-failed
 ```
 
+`max_tokens` does not participate in existing-run identity checks. To raise only
+the failed rows' output limit, set `FIRST_PASS_LLM_MAX_TOKENS` before running
+`retry-failed`; the new retry jobs record and use that value while original jobs
+keep their original parameters.
+
 The run manifest, task snapshot, task IDs, attempts, and raw result pages are stored under `content_rm/data/local/review/async/first_pass/`. Credentials are never stored there. Both synchronous and asynchronous modes reuse `LLM_BASE_URL`, `LLM_MODEL`, and `LLM_AUTHORIZATION` from `content_rm/infrastructure/config.py` or the environment.
 
 `--write-normalized` optionally writes `normalized_comments.jsonl` for debugging. With no LLM mode selected, the script only validates/counts the input and writes `summary.json`.

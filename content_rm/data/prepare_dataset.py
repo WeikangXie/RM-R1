@@ -64,7 +64,7 @@ from data.records import (
     RawComment,
     ReviewContext,
 )
-from data.rubric_utils import read_rubrics, rubrics_text
+from data.rubric_utils import canonicalize_rubric_names, read_rubrics, rubrics_text
 
 LABEL_BY_COMMENT_STATE = {"PUBLISHED": "pass", "HIDE": "reject"}
 
@@ -160,10 +160,13 @@ def build_tasks(rows: list[dict[str, Any]], rubrics: list[dict[str, str]]) -> li
 
 def validate_annotation(value: dict[str, Any], valid_rubrics: set[str]) -> FirstPassAnnotation:
     annotation = FirstPassAnnotation.model_validate(value)
-    unknown = [item for item in annotation.violated_rubrics if item not in valid_rubrics]
-    if unknown:
-        raise ValueError(f"unknown rubrics: {unknown}")
-    return annotation
+    return annotation.model_copy(
+        update={
+            "violated_rubrics": canonicalize_rubric_names(
+                annotation.violated_rubrics, valid_rubrics
+            )
+        }
+    )
 
 
 def failed_record(task: AnnotationTask, error: str, raw_content: str | None = None) -> LLMAnnotationRecord:
@@ -398,6 +401,7 @@ def main() -> None:
     if args.async_action:
         if args.async_action != "submit" and not manifest_path(run_dir).exists():
             raise ValueError(f"async run does not exist: {run_dir}")
+        async_params = request_params()
         initialize_run(
             run_dir=run_dir,
             run_name="content-rm-first-pass",
@@ -406,7 +410,7 @@ def main() -> None:
             output_path=output_path,
             model=LLM_MODEL,
             batch_size=args.batch_size,
-            params=request_params(),
+            params=async_params,
         )
 
         with make_async_client() as client:
@@ -423,7 +427,7 @@ def main() -> None:
                     valid_rubrics,
                 )
             else:
-                append_retry_jobs(run_dir)
+                append_retry_jobs(run_dir, params=async_params)
                 result = submit_run(client, run_dir)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return

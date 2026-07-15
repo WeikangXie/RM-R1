@@ -19,6 +19,7 @@ from infrastructure.cmb_async_model import (
     AsyncResultItem,
     AsyncTaskContent,
     AsyncTaskDetail,
+    AsyncTaskParams,
     TaskState,
 )
 
@@ -28,6 +29,7 @@ class FakeAsyncClient:
         self.counter = 0
         self.details: dict[str, AsyncTaskDetail] = {}
         self.contents: dict[str, list] = {}
+        self.params: dict[str, AsyncTaskParams] = {}
         self.omit_once: set[str] = set()
         self.upload_calls = 0
         self.submit_calls = 0
@@ -38,9 +40,12 @@ class FakeAsyncClient:
         self.details[task_id] = AsyncTaskDetail(id=task_id, state=TaskState.PREPARE)
         return task_id
 
-    def upload_batch_content(self, task_id: str, contents: list, params: object) -> None:
+    def upload_batch_content(
+        self, task_id: str, contents: list, params: AsyncTaskParams
+    ) -> None:
         self.upload_calls += 1
         self.contents[task_id] = contents
+        self.params[task_id] = params
         self.details[task_id] = AsyncTaskDetail(
             id=task_id,
             state=TaskState.PREPARE,
@@ -143,13 +148,42 @@ def test_failed_item_can_be_retried_without_resubmitting_successes(tmp_path: Pat
     assert first.errors == {failed_id: "platform did not return a result"}
 
     mark_failed_tasks(run_dir, list(first.errors))
-    append_retry_jobs(run_dir)
+    retry_params = AsyncRequestParams(temperature=0.0, max_tokens=1536)
+    append_retry_jobs(run_dir, params=retry_params)
     submit_run(client, run_dir)
     second = collect_latest_results(client, run_dir)
     assert not second.errors
     assert set(second.items) == {task.custom_id for task in tasks}
     assert len(client.contents["task-3"]) == 1
     assert client.contents["task-3"][0].custom_id == failed_id
+    assert client.params["task-1"].max_tokens == 10
+    assert client.params["task-3"].max_tokens == 1536
+    manifest = load_manifest(run_dir)
+    assert manifest.params.max_tokens == 10
+    assert manifest.jobs[-1].params == retry_params
+
+
+def test_existing_run_allows_max_tokens_to_change(tmp_path: Path) -> None:
+    run_dir, tasks = create_run(tmp_path, 2)
+    manifest = load_manifest(run_dir)
+
+    resumed = initialize_run(
+        run_dir=run_dir,
+        run_name=manifest.run_name,
+        tasks=tasks,
+        input_paths={
+            name: Path(fingerprint.path)
+            for name, fingerprint in manifest.input_files.items()
+        },
+        output_path=Path(manifest.output_path),
+        model=manifest.model,
+        batch_size=manifest.batch_size,
+        params=manifest.params.model_copy(update={"max_tokens": 1536}),
+    )
+
+    # The original job keeps the original run parameters. Only a later retry
+    # receives the raised limit explicitly.
+    assert resumed.params.max_tokens == 10
 
 
 def test_submit_resumes_after_upload_response_was_not_persisted(tmp_path: Path) -> None:

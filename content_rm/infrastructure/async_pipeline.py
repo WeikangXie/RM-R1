@@ -54,6 +54,7 @@ class InputFingerprint(StrictModel):
 class AsyncJobRecord(StrictModel):
     custom_ids: list[str]
     attempt: int = 1
+    params: AsyncRequestParams | None = None
     lifecycle: JobLifecycle = "planned"
     task_id: str | None = None
     platform_state: str | None = None
@@ -193,7 +194,9 @@ def initialize_run(
             "output_path": str(output_path.resolve()),
             "model": model,
             "batch_size": batch_size,
-            "params": params.model_dump(mode="json"),
+            # max_tokens is an operational output limit. It may be raised for
+            # retries without changing the identity of an existing run.
+            "params": params.model_dump(mode="json", exclude={"max_tokens"}),
         }
         actual = {
             "run_name": manifest.run_name,
@@ -204,7 +207,9 @@ def initialize_run(
             "output_path": manifest.output_path,
             "model": manifest.model,
             "batch_size": manifest.batch_size,
-            "params": manifest.params.model_dump(mode="json"),
+            "params": manifest.params.model_dump(
+                mode="json", exclude={"max_tokens"}
+            ),
         }
         if actual != expected:
             raise ValueError(
@@ -297,7 +302,7 @@ def submit_run(client: CmbAsyncLLM, run_dir: Path) -> dict[str, Any]:
                 client.upload_batch_content(
                     job.task_id,
                     _contents_for_job(manifest, job, tasks_by_id),
-                    _client_params(manifest.params),
+                    _client_params(job.params or manifest.params),
                 )
                 job.lifecycle = "uploaded"
                 job.error = None
@@ -443,13 +448,17 @@ def mark_failed_tasks(run_dir: Path, failed_custom_ids: list[str]) -> AsyncRunMa
     return manifest
 
 
-def append_retry_jobs(run_dir: Path) -> AsyncRunManifest:
+def append_retry_jobs(
+    run_dir: Path, *, params: AsyncRequestParams | None = None
+) -> AsyncRunManifest:
     manifest = load_manifest(run_dir)
     if not manifest.failed_custom_ids:
         raise ValueError("manifest has no failed tasks to retry; run collect first")
     next_attempt = max((job.attempt for job in manifest.jobs), default=0) + 1
     for chunk in _chunks(manifest.failed_custom_ids, manifest.batch_size):
-        manifest.jobs.append(AsyncJobRecord(custom_ids=chunk, attempt=next_attempt))
+        manifest.jobs.append(
+            AsyncJobRecord(custom_ids=chunk, attempt=next_attempt, params=params)
+        )
     manifest.failed_custom_ids = []
     save_manifest(run_dir, manifest)
     return manifest

@@ -14,7 +14,10 @@ from data.records import (
     SecondPassAnnotation,
     SecondPassRecord,
 )
-from data.second_pass_review import build_tasks
+from data.second_pass_review import (
+    build_tasks,
+    parse_response_record as parse_second_pass_response,
+)
 
 
 RUBRICS = [{"name": "事实准确性", "description": "事实必须准确"}]
@@ -54,6 +57,28 @@ def test_second_pass_selects_only_successful_disagreements() -> None:
     tasks = build_tasks(records, RUBRICS)
     assert [str(task.comment_id) for task in tasks] == [str(UUID(int=2))]
     assert tasks[0].first_annotation is not None
+
+
+def test_second_pass_canonicalizes_known_rubric_alias() -> None:
+    task = build_tasks(
+        [first_record(1, "reject", "pass")],
+        [{"name": "不得暗示收益", "description": "不得暗示确定收益"}],
+    )[0]
+    response = {
+        "choices": [
+            {
+                "message": {
+                    "content": '{"status": "ok", "violated_rubrics": ["暗示收益"], "reasoning": "存在收益暗示", "decision": "reject"}'
+                }
+            }
+        ]
+    }
+
+    result = parse_second_pass_response(task, response, {"不得暗示收益"})
+
+    assert result.ok
+    assert result.annotation is not None
+    assert result.annotation.violated_rubrics == ["不得暗示收益"]
 
 
 def test_sft_precedence_and_unresolved_disagreement_skip() -> None:

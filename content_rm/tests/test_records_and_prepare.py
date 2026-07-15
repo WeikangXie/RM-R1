@@ -89,3 +89,31 @@ def test_first_pass_rejects_unknown_rubric() -> None:
     result = parse_response_record(task, response, {"事实准确性"})
     assert not result.ok
     assert "unknown rubrics" in (result.error or "")
+
+
+def test_first_pass_canonicalizes_known_rubric_aliases() -> None:
+    task = build_tasks(
+        [raw_row("12345678-1234-5678-1234-567812345678")], RUBRICS
+    )[0]
+    response = {
+        "choices": [
+            {
+                "message": {
+                    "content": '{"violated_rubrics": ["不得诱导购买/卖出", "诱导购买/卖出", "暗示收益", "夸大产品表现"], "reasoning": "命中", "decision": "reject"}'
+                }
+            }
+        ]
+    }
+    result = parse_response_record(
+        task,
+        response,
+        {"不得诱导购买 / 卖出", "不得暗示收益", "不得夸大产品表现"},
+    )
+
+    assert result.ok
+    assert result.annotation is not None
+    assert result.annotation.violated_rubrics == [
+        "不得诱导购买 / 卖出",
+        "不得暗示收益",
+        "不得夸大产品表现",
+    ]

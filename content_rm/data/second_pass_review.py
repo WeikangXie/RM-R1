@@ -59,7 +59,7 @@ from data.records import (
     SecondPassAnnotation,
     SecondPassRecord,
 )
-from data.rubric_utils import read_rubrics, rubrics_text
+from data.rubric_utils import canonicalize_rubric_names, read_rubrics, rubrics_text
 
 SYSTEM_PROMPT = """你是金融内容社区的 AI 回复审核复核助手。
 
@@ -157,10 +157,13 @@ def validate_annotation(
         raise ValueError(
             f"decision must equal audit_label {expected_decision!r}, got {annotation.decision!r}"
         )
-    unknown = [item for item in annotation.violated_rubrics if item not in valid_rubrics]
-    if unknown:
-        raise ValueError(f"unknown rubrics: {unknown}")
-    return annotation
+    return annotation.model_copy(
+        update={
+            "violated_rubrics": canonicalize_rubric_names(
+                annotation.violated_rubrics, valid_rubrics
+            )
+        }
+    )
 
 
 def failed_record(task: AnnotationTask, error: str, raw_content: str | None = None) -> SecondPassRecord:
@@ -409,6 +412,7 @@ def main() -> None:
     if args.async_action:
         if args.async_action != "submit" and not manifest_path(run_dir).exists():
             raise ValueError(f"async run does not exist: {run_dir}")
+        async_params = request_params()
         initialize_run(
             run_dir=run_dir,
             run_name="content-rm-second-pass",
@@ -420,7 +424,7 @@ def main() -> None:
             output_path=args.output,
             model=LLM_MODEL,
             batch_size=args.batch_size,
-            params=request_params(),
+            params=async_params,
         )
         with make_async_client() as client:
             if args.async_action == "submit":
@@ -437,7 +441,7 @@ def main() -> None:
                     valid_rubrics,
                 )
             else:
-                append_retry_jobs(run_dir)
+                append_retry_jobs(run_dir, params=async_params)
                 result = submit_run(client, run_dir)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
