@@ -271,3 +271,15 @@
 - 回答：`uv sync --dev` 根据当前项目的 `pyproject.toml` 和 `uv.lock` 创建或更新虚拟环境，并同步普通依赖及 `dev` 依赖组；它不会自动运行测试。`--project content_rm` 是 uv 的全局选项，用来明确指定 uv 项目目录，因此从 RM-R1 根目录可执行 `uv --project content_rm sync --dev`。它只改变 uv 查找项目配置、锁文件和虚拟环境的位置，不会把 shell 当前目录切换到 `content_rm/`，所以命令中的脚本等相对路径仍按当前 shell 目录解释。
 - 可能缺乏的知识：依赖同步、命令执行、项目根目录和 shell 当前工作目录是不同概念；`--project` 本身不是完整命令，后面仍需跟 `sync`、`run` 等子命令。
 - Decision：从 RM-R1 根目录操作 Content RM 时显式使用 `uv --project content_rm ...`；若希望同时切换命令工作目录，可先 `cd content_rm`，或使用 uv 的 `--directory content_rm` 选项。
+
+## 2026-07-14 PowerShell 命令解析与大小写
+
+### 问题：为什么在 PowerShell 中执行 Linux 风格的 `curl --request ...` 会提示 `Invoke-WebRequest` 不接受 `--request`？
+- 回答：Windows PowerShell 会把 `curl` 解析为 `Invoke-WebRequest` 的别名，而不是实际的 `curl.exe`。`Invoke-WebRequest` 不支持 curl 的 `--request`、`--header`、`--data-raw` 等 GNU 风格参数，因此在参数绑定阶段直接报错。可以用 `Get-Command curl` 检查解析结果；需要执行标准 curl 命令时显式写 `curl.exe`，或者改用 PowerShell 原生的 `Invoke-RestMethod -Method Post -Headers ... -Body ...`。
+- 可能缺乏的知识：PowerShell 在运行命令前会按 alias、function、cmdlet、external executable 等规则解析命令名；屏幕上写的是 `curl`，实际被调用的程序不一定是 curl 可执行文件。
+- Decision：从 Linux 文档复制 curl 命令到 Windows PowerShell 时优先将命令名写成 `curl.exe`；如果需要直接处理 JSON 响应，则优先使用 `Invoke-RestMethod`。不要在截图或命令历史中暴露真实 Bearer Token。
+
+### 问题：为什么 PowerShell 示例中的命令和参数经常使用大写开头？全部小写为什么也能运行？
+- 回答：PowerShell 的 cmdlet 名、参数名和普通变量名通常不区分大小写，因此 `Invoke-RestMethod -Uri ... -Method Post` 与 `invoke-restmethod -uri ... -method post` 都能运行。官方示例采用 PascalCase，主要是遵循 `Verb-Noun` 命名规范并提升可读性，不是语法要求。
+- 可能缺乏的知识：PowerShell 自身不区分大小写，不代表它调用的外部程序也不区分；`curl.exe` 的选项、Linux 文件路径，以及 Linux/macOS 环境变量名称仍可能区分大小写。
+- Decision：PowerShell 自身命令可以按个人习惯统一使用小写；涉及外部程序、跨平台路径、环境变量和协议约定时，应保留其文档要求的准确大小写。
